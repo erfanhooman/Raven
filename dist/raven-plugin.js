@@ -17,6 +17,10 @@ import path from "node:path";
 import os from "node:os";
 function ravenHome() {
   if (process.env.RAVEN_HOME) return process.env.RAVEN_HOME;
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "raven");
+  }
   const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(xdg, "raven");
 }
@@ -1054,9 +1058,8 @@ ${clip(excerpt, 3400)}` : `\u2705 ${title} finished
 
 (no text reply \u2014 check the app)`;
           const mid = awaiting.cards?.[String(chatId)];
-          if (mid) await editMessage(chatId, mid, body).catch(() => tgSend(cfg, chatId, body).catch(() => {
-          }));
-          else await tgSend(cfg, chatId, body).catch((e) => log("warn", `relay send: ${e?.message ?? e}`));
+          if (mid) await editMessage(chatId, mid, body).catch(() => false);
+          await tgSend(cfg, chatId, body).catch((e) => log("warn", `finish send ${chatId}: ${e?.message ?? e}`));
         }
         await maybeRefreshPanels(awaiting.chats);
         return;
@@ -1547,10 +1550,12 @@ Connection: close\r
       else params.reply_markup = { inline_keyboard: [] };
       try {
         await tgApi(cfg, "editMessageText", params);
+        return true;
       } catch (e) {
         const d = String(e?.message ?? "");
-        if (d.includes("message is not modified") || d.includes("message to edit not found")) return;
-        log("debug", `editMessage: ${d}`);
+        if (d.includes("message is not modified") || d.includes("message to edit not found")) return true;
+        log("warn", `editMessage ${messageId} failed: ${d}`);
+        return false;
       }
     }
     async function answerCallback(id, text, alert = false) {
@@ -2098,6 +2103,7 @@ Always runs in build mode; set its model under \u{1F9E0} below.`
       const rows = [];
       const agents = cand?.agents ?? [];
       if (!agents.length) lines.push(``, `(no agents found \u2014 is opencode running?)`);
+      if (cand?.fallback) lines.push(``, `(agent list unreachable \u2014 showing default; opening it will retry the connection)`);
       agents.slice(0, 12).forEach((a, i) => {
         const name = String(a?.name ?? a?.id ?? `agent ${i + 1}`);
         rows.push([{ text: `${ws?.agent === name ? "\u2705 " : ""}${clip(name, 30)}`, callback_data: `s:agpick:${i}` }]);
@@ -2454,12 +2460,23 @@ model: ${modelLabel} \xB7 mode: \u{1F6E0} build (always)` : `Agent workspace: cl
       const st = await loadState();
       const focusKey = pick ? st.sessions[pick.sid]?.key ?? pick.key : null;
       const key = focusKey && keys.includes(focusKey) ? focusKey : keys[0];
-      const r = await submitAction(key, "instance.agents", {}, 8e3).catch(() => []);
-      const agents = (Array.isArray(r) ? r : []).filter((a) => {
+      let r = null;
+      let failed = false;
+      try {
+        r = await submitAction(key, "instance.agents", {}, 8e3);
+      } catch (e) {
+        failed = true;
+        log("warn", `instance.agents unreachable (${key.slice(0, 8)}): ${e?.message ?? e}`);
+      }
+      const list = Array.isArray(r) ? r : [];
+      const agents = list.filter((a) => {
         const mode = String(a?.mode ?? "primary").toLowerCase();
         const name = String(a?.name ?? a?.id ?? "").toLowerCase();
         return mode !== "subagent" && a?.hidden !== true && name !== "plan";
       });
+      if (failed && !agents.length) {
+        return { key, agents: [{ name: "build", mode: "primary" }], fallback: true };
+      }
       return { key, agents };
     }
     async function openAgentWorkspace(chatId, nameRaw) {
@@ -3794,10 +3811,18 @@ function createOpencodeDriver(input) {
         return oc("GET", `/session/${encodeURIComponent(payload.sessionID)}/diff`).catch(() => []);
       case "session.tasks":
         return oc("GET", `/session/${encodeURIComponent(payload.sessionID)}/todo`).catch(() => []);
-      case "instance.agents":
-        return oc("GET", `/agent`).catch(() => []);
-      case "instance.commands":
-        return oc("GET", `/command`).catch(() => []);
+      case "instance.agents": {
+        const r = await oc("GET", `/agent`);
+        if (Array.isArray(r)) return r;
+        for (const k of ["agents", "all", "data", "items"]) if (Array.isArray(r?.[k])) return r[k];
+        return [];
+      }
+      case "instance.commands": {
+        const r = await oc("GET", `/command`).catch(() => []);
+        if (Array.isArray(r)) return r;
+        for (const k of ["commands", "all", "data", "items"]) if (Array.isArray(r?.[k])) return r[k];
+        return [];
+      }
       case "provider.list":
         return oc("GET", `/provider`).catch(() => null);
       case "permission.list":

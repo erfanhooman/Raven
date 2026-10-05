@@ -20,6 +20,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { findOnPath, spawnShellFor } from "../util.js"
 
 export type Emit = (type: string, properties: any) => Promise<void>
 
@@ -70,8 +71,16 @@ export class ClaudeDriver {
 
   resolveBin(): string | null {
     if (this.bin && fs.existsSync(this.bin)) return this.bin
-    const guesses = [path.join(os.homedir(), ".local", "bin", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
-    for (const g of guesses) if (fs.existsSync(g)) return g
+    const viaPath = findOnPath(["claude"])
+    if (viaPath) return viaPath
+    const guesses =
+      process.platform === "win32"
+        ? [
+            path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm", "claude.cmd"),
+            path.join(os.homedir(), ".local", "bin", "claude.exe"),
+          ]
+        : [path.join(os.homedir(), ".local", "bin", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+    for (const g of guesses) if (g && fs.existsSync(g)) return g
     return null
   }
 
@@ -371,7 +380,7 @@ export class ClaudeDriver {
     if (hasTranscript) args.push("--resume", realId)
     if (model?.modelID && model.modelID !== "default") args.push("--model", model.modelID)
     args.push("--permission-mode", agent === "plan" ? "plan" : "acceptEdits")
-    const child = spawn(bin, args, { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawn(bin, args, { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"], shell: spawnShellFor(bin) })
     const run: Run = { sid, child, text: "", partialAt: 0 }
     this.runs.set(sid, run)
     await this.emit("session.status", { sessionID: sid, status: { type: "busy" } })

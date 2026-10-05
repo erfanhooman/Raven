@@ -1078,8 +1078,11 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
               ? `✅ ${title} finished\n\n${clip(excerpt, 3400)}`
               : `✅ ${title} finished\n\n(no text reply — check the app)`
           const mid = awaiting.cards?.[String(chatId)]
-          if (mid) await editMessage(chatId, mid, body).catch(() => tgSend(cfg, chatId, body).catch(() => {}))
-          else await tgSend(cfg, chatId, body).catch((e: any) => log("warn", `relay send: ${e?.message ?? e}`))
+          // Keep the live card accurate, then ALWAYS send a fresh message:
+          // Telegram edits are silent (no sound/badge), so the edit alone is
+          // easy to miss. The new message is the audible "it's over" ping.
+          if (mid) await editMessage(chatId, mid, body).catch(() => false)
+          await tgSend(cfg, chatId, body).catch((e: any) => log("warn", `finish send ${chatId}: ${e?.message ?? e}`))
         }
         await maybeRefreshPanels(awaiting.chats)
         return
@@ -1609,17 +1612,22 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       }
     }
 
-    async function editMessage(chatId: number, messageId: number, text: string, keyboard?: any) {
+    // Returns true when the card now shows the new text. Never throws for
+    // benign Telegram errors (message unchanged / deleted); returns false on
+    // real failures (network, 5xx) so callers can fall back to sendMessage.
+    async function editMessage(chatId: number, messageId: number, text: string, keyboard?: any): Promise<boolean> {
       const cfg = await loadConfig()
       const params: any = { chat_id: chatId, message_id: messageId, text: clip(text) }
       if (keyboard) params.reply_markup = keyboard
       else params.reply_markup = { inline_keyboard: [] }
       try {
         await tgApi(cfg, "editMessageText", params)
+        return true
       } catch (e: any) {
         const d = String(e?.message ?? "")
-        if (d.includes("message is not modified") || d.includes("message to edit not found")) return
-        log("debug", `editMessage: ${d}`)
+        if (d.includes("message is not modified") || d.includes("message to edit not found")) return true
+        log("warn", `editMessage ${messageId} failed: ${d}`)
+        return false
       }
     }
 
@@ -2240,6 +2248,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       const rows: any[][] = []
       const agents = cand?.agents ?? []
       if (!agents.length) lines.push(``, `(no agents found — is opencode running?)`)
+      if (cand?.fallback) lines.push(``, `(agent list unreachable — showing default; opening it will retry the connection)`)
       agents.slice(0, 12).forEach((a: any, i: number) => {
         const name = String(a?.name ?? a?.id ?? `agent ${i + 1}`)
         rows.push([{ text: `${ws?.agent === name ? "✅ " : ""}${clip(name, 30)}`, callback_data: `s:agpick:${i}` }])
@@ -2674,21 +2683,35 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
     // session. The model comes from the workspace record; when unset the
     // opencode session default is used.
 
-    async function agentCandidates(chatId: number): Promise<{ key: InstanceKey; agents: any[] } | null> {
+    async function agentCandidates(chatId: number): Promise<{ key: InstanceKey; agents: any[]; fallback?: boolean } | null> {
       const keys = await liveKeys()
       if (!keys.length) return null
       const pick = await getFocus(chatId)
       const st = await loadState()
       const focusKey = pick ? st.sessions[pick.sid]?.key ?? pick.key : null
       const key = focusKey && keys.includes(focusKey) ? focusKey : keys[0]
-      const r: any = await submitAction(key, "instance.agents", {}, 8_000).catch(() => [])
-      const agents = (Array.isArray(r) ? r : []).filter((a: any) => {
+      let r: any = null
+      let failed = false
+      try {
+        r = await submitAction(key, "instance.agents", {}, 8_000)
+      } catch (e: any) {
+        failed = true
+        log("warn", `instance.agents unreachable (${key.slice(0, 8)}): ${e?.message ?? e}`)
+      }
+      const list = Array.isArray(r) ? r : []
+      const agents = list.filter((a: any) => {
         const mode = String(a?.mode ?? "primary").toLowerCase()
         const name = String(a?.name ?? a?.id ?? "").toLowerCase()
         // Agent workspaces are always build-mode, so the read-only "plan"
         // agent is not offered here.
         return mode !== "subagent" && a?.hidden !== true && name !== "plan"
       })
+      if (failed && !agents.length) {
+        // opencode always ships a built-in build agent: offer it so /agent
+        // stays usable; opening it surfaces the real transport error if the
+        // instance is truly down.
+        return { key, agents: [{ name: "build", mode: "primary" }], fallback: true }
+      }
       return { key, agents }
     }
 

@@ -13,10 +13,57 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { findOnPath, spawnShellFor } from "../util.js"
 
 export type Emit = (type: string, properties: any) => Promise<void>
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; timer: any }
+
+// Preferred binary directory inside the VS Code extension bundle, e.g.
+// macos-aarch64 / linux-x64 / win32-x64. Falls back to scanning every
+// bundled subdir, since upstream renames these across releases.
+function vscodeBundledCodex(): string | null {
+  const extRoot = path.join(os.homedir(), ".vscode", "extensions")
+  let entries: string[] = []
+  try {
+    entries = fs.readdirSync(extRoot)
+  } catch {
+    return null
+  }
+  const exeNames = process.platform === "win32" ? ["codex.exe", "codex.cmd", "codex"] : ["codex"]
+  const preferred =
+    process.platform === "darwin"
+      ? process.arch === "arm64"
+        ? "macos-aarch64"
+        : "macos-x86_64"
+      : process.platform === "win32"
+        ? process.arch === "arm64"
+          ? "win32-arm64"
+          : "win32-x64"
+        : process.arch === "arm64"
+          ? "linux-arm64"
+          : "linux-x64"
+  for (const e of entries) {
+    if (!/openai\.chatgpt|codex/i.test(e)) continue
+    const binDir = path.join(extRoot, e, "bin")
+    let subs: string[] = []
+    try {
+      subs = fs.readdirSync(binDir)
+    } catch {
+      continue
+    }
+    const ordered = [...subs.filter((s) => s === preferred), ...subs.filter((s) => s !== preferred)]
+    for (const sub of ordered) {
+      for (const exe of exeNames) {
+        const p = path.join(binDir, sub, exe)
+        try {
+          if (fs.existsSync(p) && fs.statSync(p).isFile()) return p
+        } catch {}
+      }
+    }
+  }
+  return null
+}
 
 export class CodexDriver {
   bin: string
@@ -41,17 +88,21 @@ export class CodexDriver {
 
   resolveBin(): string | null {
     if (this.bin && fs.existsSync(this.bin)) return this.bin
-    const guesses = [
-      "/opt/homebrew/bin/codex",
-      "/usr/local/bin/codex",
-      path.join(os.homedir(), ".local", "bin", "codex"),
-    ]
-    try {
-      const exts = fs.readdirSync(path.join(os.homedir(), ".vscode", "extensions")).filter((d) => /openai\.chatgpt|codex/i.test(d))
-      for (const e of exts) guesses.push(path.join(os.homedir(), ".vscode", "extensions", e, "bin", "macos-aarch64", "codex"))
-    } catch {}
+    const viaPath = findOnPath(["codex"])
+    if (viaPath) return viaPath
+    const guesses =
+      process.platform === "win32"
+        ? [
+            path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm", "codex.cmd"),
+            path.join(os.homedir(), ".local", "bin", "codex.exe"),
+          ]
+        : [
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex",
+            path.join(os.homedir(), ".local", "bin", "codex"),
+          ]
     for (const g of guesses) if (g && fs.existsSync(g)) return g
-    return null
+    return vscodeBundledCodex()
   }
 
   available(): boolean {
@@ -68,7 +119,7 @@ export class CodexDriver {
   private async start(): Promise<void> {
     const bin = this.resolveBin()
     if (!bin) throw new Error("codex binary not found (install @openai/codex or set RAVEN_CODEX_BIN)")
-    const child = spawn(bin, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], cwd: this.dirOf(), env: process.env })
+    const child = spawn(bin, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], cwd: this.dirOf(), env: process.env, shell: spawnShellFor(bin) })
     this.child = child
     child.stdout.on("data", (c: Buffer) => void this.onData(c.toString("utf8")))
     child.stderr.on("data", () => {})

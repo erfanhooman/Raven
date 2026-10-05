@@ -79,10 +79,10 @@ async function ask(question: string, hidden = false): Promise<string> {
 
 function guessOpencode(): boolean {
   try {
-    execFileSync("which", ["opencode"], { stdio: "ignore" })
+    execFileSync(process.platform === "win32" ? "where" : "which", ["opencode"], { stdio: "ignore" })
     return true
   } catch {
-    return fs.existsSync("/Applications/OpenCode.app")
+    return process.platform === "darwin" && fs.existsSync("/Applications/OpenCode.app")
   }
 }
 
@@ -164,12 +164,19 @@ async function cmdSetup(args: string[]) {
     } catch {}
   }
 
-  // launchd agent (auto-start the daemon with the machine)
+  // Background service (auto-start the daemon with the machine).
+  // macOS uses launchd; other platforms should run `raven run` under a
+  // supervisor instead (systemd unit, Task Scheduler, pm2, …).
   if (!noService) {
-    try {
-      await installService()
-    } catch (e: any) {
-      console.log(`service install skipped: ${e?.message ?? e}`)
+    if (process.platform !== "darwin") {
+      console.log("background service is macOS (launchd) only — skipped.")
+      console.log("run `raven run` under your supervisor to keep the daemon alive (see README).")
+    } else {
+      try {
+        await installService()
+      } catch (e: any) {
+        console.log(`service install skipped: ${e?.message ?? e}`)
+      }
     }
   }
 
@@ -177,7 +184,7 @@ async function cmdSetup(args: string[]) {
   console.log("Next steps:")
   console.log("  1. Restart OpenCode Desktop (or run `raven run` to start the daemon now).")
   console.log("  2. Open your bot in Telegram and send /start.")
-  console.log("  3. Raven prints a 6-character pairing code (terminal + macOS notification).")
+  console.log("  3. Raven prints a 6-character pairing code in the terminal (plus a desktop notification on macOS).")
   console.log(`  4. Reply to the bot with: /pair THECODE — that links this chat. Anyone unpaired can never read your sessions.`)
   if (yes) console.log("(non-interactive: done)")
 }
@@ -278,21 +285,68 @@ async function cmdStatus(): Promise<void> {
 
 async function cmdLogs(follow: boolean): Promise<void> {
   const file = path.join(ravenHome(), "raven.log")
+  // Pure-Node tail: the `tail(1)` binary does not exist on Windows.
+  const printTail = (n: number) => {
+    try {
+      const raw = fs.readFileSync(file, "utf8").split("\n")
+      const lines = raw[raw.length - 1] === "" ? raw.slice(0, -1) : raw
+      for (const l of lines.slice(-n)) console.log(l)
+    } catch {
+      console.log(`no log file yet at ${file} (is the daemon running?)`)
+    }
+  }
+  if (!follow) {
+    printTail(80)
+    return
+  }
+  printTail(20)
+  let pos = 0
   try {
-    execFileSync("tail", follow ? ["-f", file] : ["-n", "80", file], { stdio: "inherit" })
-  } catch {}
+    pos = fs.statSync(file).size
+  } catch {
+    return
+  }
+  const timer = setInterval(() => {
+    try {
+      const size = fs.statSync(file).size
+      if (size < pos) pos = 0 // truncated/rotated
+      if (size > pos) {
+        const fd = fs.openSync(file, "r")
+        const buf = Buffer.alloc(size - pos)
+        fs.readSync(fd, buf, 0, buf.length, pos)
+        fs.closeSync(fd)
+        pos = size
+        process.stdout.write(buf.toString("utf8"))
+      }
+    } catch {}
+  }, 500)
+  const stop = () => {
+    clearInterval(timer)
+    process.exit(0)
+  }
+  process.on("SIGINT", stop)
+  process.on("SIGTERM", stop)
+}
+
+function launchdGuard(): boolean {
+  if (process.platform === "darwin") return true
+  console.log("the background service is macOS (launchd) only — run `raven run` under your supervisor instead.")
+  return false
 }
 
 async function cmdUninstall(purge: boolean): Promise<void> {
-  try {
-    execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" })
-  } catch {}
-  try {
-    await fsp.rm(plistPath(), { force: true })
-  } catch {}
+  if (process.platform === "darwin") {
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" })
+    } catch {}
+    try {
+      await fsp.rm(plistPath(), { force: true })
+    } catch {}
+    console.log("removed service")
+  }
   await fsp.rm(pluginPath(), { force: true })
   for (const l of legacyPluginPaths()) await fsp.rm(l, { force: true })
-  console.log("removed service + plugin")
+  console.log("removed plugin")
   if (purge) {
     await fsp.rm(ravenHome(), { recursive: true, force: true })
     console.log("removed", ravenHome())
@@ -311,6 +365,7 @@ async function main() {
       await cmdRun()
       break
     case "service":
+      if (!launchdGuard()) break
       if (rest[0] === "remove") {
         try {
           execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" })
@@ -359,9 +414,9 @@ async function main() {
           "raven — Telegram bridge for opencode · Claude Code · Codex",
           "",
           "usage:",
-          "  raven setup            wizard: token, config, plugin, launchd service",
+          "  raven setup            wizard: token, config, plugin, background service (macOS)",
           "  raven run              run the daemon in the foreground",
-          "  raven service install|remove|status",
+          "  raven service install|remove|status   (macOS launchd only)",
           "  raven pair             show the pending pairing code (send /start in the new chat first)",
           "  raven status           what's paired, who's leader, where logs live",
           "  raven logs [-f]        tail the bridge log",

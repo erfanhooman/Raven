@@ -121,10 +121,21 @@ export function createOpencodeDriver(input: { directory?: string; serverUrl?: st
         return oc("GET", `/session/${encodeURIComponent(payload.sessionID)}/diff`).catch(() => [])
       case "session.tasks":
         return oc("GET", `/session/${encodeURIComponent(payload.sessionID)}/todo`).catch(() => [])
-      case "instance.agents":
-        return oc("GET", `/agent`).catch(() => [])
-      case "instance.commands":
-        return oc("GET", `/command`).catch(() => [])
+      case "instance.agents": {
+        // GET /agent shape varies across opencode versions (bare array vs
+        // {agents:[...]} vs {all:[...]}); normalize defensively and let
+        // transport errors throw so the caller can fall back visibly.
+        const r: any = await oc("GET", `/agent`)
+        if (Array.isArray(r)) return r
+        for (const k of ["agents", "all", "data", "items"]) if (Array.isArray(r?.[k])) return r[k]
+        return []
+      }
+      case "instance.commands": {
+        const r: any = await oc("GET", `/command`).catch(() => [])
+        if (Array.isArray(r)) return r
+        for (const k of ["commands", "all", "data", "items"]) if (Array.isArray(r?.[k])) return r[k]
+        return []
+      }
       case "provider.list":
         return oc("GET", `/provider`).catch(() => null)
       case "permission.list":

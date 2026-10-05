@@ -10,12 +10,38 @@ var __export = (target, all) => {
 };
 
 // src/util.ts
+import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 function ravenHome() {
   if (process.env.RAVEN_HOME) return process.env.RAVEN_HOME;
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "raven");
+  }
   const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(xdg, "raven");
+}
+function findOnPath(names) {
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const exts = process.platform === "win32" ? [.../* @__PURE__ */ new Set([...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").map((e) => e.trim()).filter(Boolean), ""])] : ["", ".exe", ".cmd"];
+  for (const dir of dirs) {
+    for (const name of names) {
+      for (const ext of exts) {
+        const p = path.join(dir, `${name}${ext}`);
+        try {
+          if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+        } catch {
+        }
+      }
+    }
+  }
+  return null;
+}
+function spawnShellFor(bin) {
+  if (process.platform !== "win32") return false;
+  const b = bin.toLowerCase();
+  return b.endsWith(".cmd") || b.endsWith(".bat");
 }
 var init_util = __esm({
   "src/util.ts"() {
@@ -1034,9 +1060,8 @@ ${clip(excerpt, 3400)}` : `\u2705 ${title} finished
 
 (no text reply \u2014 check the app)`;
           const mid = awaiting.cards?.[String(chatId)];
-          if (mid) await editMessage(chatId, mid, body).catch(() => tgSend(cfg, chatId, body).catch(() => {
-          }));
-          else await tgSend(cfg, chatId, body).catch((e) => log("warn", `relay send: ${e?.message ?? e}`));
+          if (mid) await editMessage(chatId, mid, body).catch(() => false);
+          await tgSend(cfg, chatId, body).catch((e) => log("warn", `finish send ${chatId}: ${e?.message ?? e}`));
         }
         await maybeRefreshPanels(awaiting.chats);
         return;
@@ -1527,10 +1552,12 @@ Connection: close\r
       else params.reply_markup = { inline_keyboard: [] };
       try {
         await tgApi(cfg, "editMessageText", params);
+        return true;
       } catch (e) {
         const d = String(e?.message ?? "");
-        if (d.includes("message is not modified") || d.includes("message to edit not found")) return;
-        log("debug", `editMessage: ${d}`);
+        if (d.includes("message is not modified") || d.includes("message to edit not found")) return true;
+        log("warn", `editMessage ${messageId} failed: ${d}`);
+        return false;
       }
     }
     async function answerCallback(id, text, alert = false) {
@@ -2078,6 +2105,7 @@ Always runs in build mode; set its model under \u{1F9E0} below.`
       const rows = [];
       const agents = cand?.agents ?? [];
       if (!agents.length) lines.push(``, `(no agents found \u2014 is opencode running?)`);
+      if (cand?.fallback) lines.push(``, `(agent list unreachable \u2014 showing default; opening it will retry the connection)`);
       agents.slice(0, 12).forEach((a, i) => {
         const name = String(a?.name ?? a?.id ?? `agent ${i + 1}`);
         rows.push([{ text: `${ws?.agent === name ? "\u2705 " : ""}${clip(name, 30)}`, callback_data: `s:agpick:${i}` }]);
@@ -2434,12 +2462,23 @@ model: ${modelLabel} \xB7 mode: \u{1F6E0} build (always)` : `Agent workspace: cl
       const st = await loadState();
       const focusKey = pick ? st.sessions[pick.sid]?.key ?? pick.key : null;
       const key = focusKey && keys.includes(focusKey) ? focusKey : keys[0];
-      const r = await submitAction(key, "instance.agents", {}, 8e3).catch(() => []);
-      const agents = (Array.isArray(r) ? r : []).filter((a) => {
+      let r = null;
+      let failed = false;
+      try {
+        r = await submitAction(key, "instance.agents", {}, 8e3);
+      } catch (e) {
+        failed = true;
+        log("warn", `instance.agents unreachable (${key.slice(0, 8)}): ${e?.message ?? e}`);
+      }
+      const list = Array.isArray(r) ? r : [];
+      const agents = list.filter((a) => {
         const mode = String(a?.mode ?? "primary").toLowerCase();
         const name = String(a?.name ?? a?.id ?? "").toLowerCase();
         return mode !== "subagent" && a?.hidden !== true && name !== "plan";
       });
+      if (failed && !agents.length) {
+        return { key, agents: [{ name: "build", mode: "primary" }], fallback: true };
+      }
       return { key, agents };
     }
     async function openAgentWorkspace(chatId, nameRaw) {
@@ -3719,7 +3758,7 @@ __export(claude_exports, {
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import fsp2 from "node:fs/promises";
-import fs from "node:fs";
+import fs2 from "node:fs";
 import os3 from "node:os";
 import path3 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -3745,6 +3784,7 @@ var ALIAS_MODELS, ClaudeDriver;
 var init_claude = __esm({
   "src/drivers/claude.ts"() {
     "use strict";
+    init_util();
     ALIAS_MODELS = ["default", "sonnet", "opus", "haiku"];
     ClaudeDriver = class {
       bin;
@@ -3771,9 +3811,14 @@ var init_claude = __esm({
         return !!this.resolveBin();
       }
       resolveBin() {
-        if (this.bin && fs.existsSync(this.bin)) return this.bin;
-        const guesses = [path3.join(os3.homedir(), ".local", "bin", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"];
-        for (const g of guesses) if (fs.existsSync(g)) return g;
+        if (this.bin && fs2.existsSync(this.bin)) return this.bin;
+        const viaPath = findOnPath(["claude"]);
+        if (viaPath) return viaPath;
+        const guesses = process.platform === "win32" ? [
+          path3.join(process.env.APPDATA || path3.join(os3.homedir(), "AppData", "Roaming"), "npm", "claude.cmd"),
+          path3.join(os3.homedir(), ".local", "bin", "claude.exe")
+        ] : [path3.join(os3.homedir(), ".local", "bin", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"];
+        for (const g of guesses) if (g && fs2.existsSync(g)) return g;
         return null;
       }
       async start() {
@@ -3874,7 +3919,7 @@ var init_claude = __esm({
         const out = [];
         let dirs = [];
         try {
-          dirs = fs.readdirSync(this.projectsRoot());
+          dirs = fs2.readdirSync(this.projectsRoot());
         } catch {
           return out;
         }
@@ -3882,14 +3927,14 @@ var init_claude = __esm({
           const full = path3.join(this.projectsRoot(), d);
           let files = [];
           try {
-            files = fs.readdirSync(full).filter((f) => f.endsWith(".jsonl"));
+            files = fs2.readdirSync(full).filter((f) => f.endsWith(".jsonl"));
           } catch {
             continue;
           }
           for (const f of files) {
             const fp = path3.join(full, f);
             try {
-              const st = fs.statSync(fp);
+              const st = fs2.statSync(fp);
               const meta = this.transcriptMeta(fp);
               const uuid = f.replace(/\.jsonl$/, "");
               out.push({
@@ -3910,10 +3955,10 @@ var init_claude = __esm({
       transcriptMeta(fp) {
         const res = { title: "", cwd: "", model: "", mode: "" };
         try {
-          const fd = fs.openSync(fp, "r");
+          const fd = fs2.openSync(fp, "r");
           const buf = Buffer.alloc(65536);
-          const n = fs.readSync(fd, buf, 0, buf.length, 0);
-          fs.closeSync(fd);
+          const n = fs2.readSync(fd, buf, 0, buf.length, 0);
+          fs2.closeSync(fd);
           for (const line of buf.subarray(0, n).toString("utf8").split("\n")) {
             if (!line.trim().startsWith("{")) continue;
             let j;
@@ -3942,7 +3987,7 @@ var init_claude = __esm({
         if (!fp) return [];
         let raw = "";
         try {
-          raw = fs.readFileSync(fp, "utf8");
+          raw = fs2.readFileSync(fp, "utf8");
         } catch {
           return [];
         }
@@ -3979,13 +4024,13 @@ var init_claude = __esm({
       findTranscript(uuid) {
         let dirs = [];
         try {
-          dirs = fs.readdirSync(this.projectsRoot());
+          dirs = fs2.readdirSync(this.projectsRoot());
         } catch {
           return null;
         }
         for (const d of dirs) {
           const fp = path3.join(this.projectsRoot(), d, `${uuid}.jsonl`);
-          if (fs.existsSync(fp)) return fp;
+          if (fs2.existsSync(fp)) return fp;
         }
         return null;
       }
@@ -4033,14 +4078,14 @@ var init_claude = __esm({
       }
       loadIdMap() {
         try {
-          const j = JSON.parse(fs.readFileSync(this.mapFile(), "utf8"));
+          const j = JSON.parse(fs2.readFileSync(this.mapFile(), "utf8"));
           for (const [k, v] of Object.entries(j)) if (typeof v === "string") this.claudeId.set(k, v);
         } catch {
         }
       }
       saveIdMap() {
         try {
-          fs.writeFileSync(this.mapFile(), JSON.stringify(Object.fromEntries(this.claudeId)));
+          fs2.writeFileSync(this.mapFile(), JSON.stringify(Object.fromEntries(this.claudeId)));
         } catch {
         }
       }
@@ -4055,12 +4100,12 @@ var init_claude = __esm({
         const realId = this.realIdOf(sid);
         const hasTranscript = !!this.findTranscript(realId);
         const known = this.listSessions().find((s) => s.id === sid);
-        const cwd = (known?.directory && fs.existsSync(known.directory) ? known.directory : "") || (pc?.dir && fs.existsSync(pc.dir) ? pc.dir : "") || this.dirOf();
+        const cwd = (known?.directory && fs2.existsSync(known.directory) ? known.directory : "") || (pc?.dir && fs2.existsSync(pc.dir) ? pc.dir : "") || this.dirOf();
         const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--settings", this.settingsFile];
         if (hasTranscript) args.push("--resume", realId);
         if (model?.modelID && model.modelID !== "default") args.push("--model", model.modelID);
         args.push("--permission-mode", agent === "plan" ? "plan" : "acceptEdits");
-        const child = spawn(bin, args, { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(bin, args, { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"], shell: spawnShellFor(bin) });
         const run = { sid, child, text: "", partialAt: 0 };
         this.runs.set(sid, run);
         await this.emit("session.status", { sessionID: sid, status: { type: "busy" } });
@@ -4172,10 +4217,42 @@ __export(codex_exports, {
   CodexDriver: () => CodexDriver
 });
 import { spawn as spawn2 } from "node:child_process";
-import fs2 from "node:fs";
+import fs3 from "node:fs";
 import os4 from "node:os";
 import path4 from "node:path";
 import { randomUUID as randomUUID3 } from "node:crypto";
+function vscodeBundledCodex() {
+  const extRoot = path4.join(os4.homedir(), ".vscode", "extensions");
+  let entries = [];
+  try {
+    entries = fs3.readdirSync(extRoot);
+  } catch {
+    return null;
+  }
+  const exeNames = process.platform === "win32" ? ["codex.exe", "codex.cmd", "codex"] : ["codex"];
+  const preferred = process.platform === "darwin" ? process.arch === "arm64" ? "macos-aarch64" : "macos-x86_64" : process.platform === "win32" ? process.arch === "arm64" ? "win32-arm64" : "win32-x64" : process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  for (const e of entries) {
+    if (!/openai\.chatgpt|codex/i.test(e)) continue;
+    const binDir = path4.join(extRoot, e, "bin");
+    let subs = [];
+    try {
+      subs = fs3.readdirSync(binDir);
+    } catch {
+      continue;
+    }
+    const ordered = [...subs.filter((s) => s === preferred), ...subs.filter((s) => s !== preferred)];
+    for (const sub of ordered) {
+      for (const exe of exeNames) {
+        const p = path4.join(binDir, sub, exe);
+        try {
+          if (fs3.existsSync(p) && fs3.statSync(p).isFile()) return p;
+        } catch {
+        }
+      }
+    }
+  }
+  return null;
+}
 function turnsToMessages(turns) {
   const out = [];
   for (const t of turns) {
@@ -4197,6 +4274,7 @@ var CodexDriver;
 var init_codex = __esm({
   "src/drivers/codex.ts"() {
     "use strict";
+    init_util();
     CodexDriver = class {
       bin;
       home;
@@ -4217,19 +4295,19 @@ var init_codex = __esm({
         this.bin = opts.bin || process.env.RAVEN_CODEX_BIN || "";
       }
       resolveBin() {
-        if (this.bin && fs2.existsSync(this.bin)) return this.bin;
-        const guesses = [
+        if (this.bin && fs3.existsSync(this.bin)) return this.bin;
+        const viaPath = findOnPath(["codex"]);
+        if (viaPath) return viaPath;
+        const guesses = process.platform === "win32" ? [
+          path4.join(process.env.APPDATA || path4.join(os4.homedir(), "AppData", "Roaming"), "npm", "codex.cmd"),
+          path4.join(os4.homedir(), ".local", "bin", "codex.exe")
+        ] : [
           "/opt/homebrew/bin/codex",
           "/usr/local/bin/codex",
           path4.join(os4.homedir(), ".local", "bin", "codex")
         ];
-        try {
-          const exts = fs2.readdirSync(path4.join(os4.homedir(), ".vscode", "extensions")).filter((d) => /openai\.chatgpt|codex/i.test(d));
-          for (const e of exts) guesses.push(path4.join(os4.homedir(), ".vscode", "extensions", e, "bin", "macos-aarch64", "codex"));
-        } catch {
-        }
-        for (const g of guesses) if (g && fs2.existsSync(g)) return g;
-        return null;
+        for (const g of guesses) if (g && fs3.existsSync(g)) return g;
+        return vscodeBundledCodex();
       }
       available() {
         return !!this.resolveBin();
@@ -4243,7 +4321,7 @@ var init_codex = __esm({
       async start() {
         const bin = this.resolveBin();
         if (!bin) throw new Error("codex binary not found (install @openai/codex or set RAVEN_CODEX_BIN)");
-        const child = spawn2(bin, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], cwd: this.dirOf(), env: process.env });
+        const child = spawn2(bin, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], cwd: this.dirOf(), env: process.env, shell: spawnShellFor(bin) });
         this.child = child;
         child.stdout.on("data", (c) => void this.onData(c.toString("utf8")));
         child.stderr.on("data", () => {
@@ -4500,7 +4578,7 @@ var init_codex = __esm({
       providerList() {
         const models = { default: { id: "default", name: "default (config.toml)" } };
         try {
-          const raw = JSON.parse(fs2.readFileSync(path4.join(os4.homedir(), ".codex", "models_cache.json"), "utf8"));
+          const raw = JSON.parse(fs3.readFileSync(path4.join(os4.homedir(), ".codex", "models_cache.json"), "utf8"));
           const arr = Array.isArray(raw) ? raw : raw?.models ?? raw?.data ?? [];
           for (const m of arr) {
             const id = String(m?.slug ?? m?.model ?? m?.id ?? "");
@@ -4509,7 +4587,7 @@ var init_codex = __esm({
         } catch {
         }
         try {
-          const cfg = fs2.readFileSync(path4.join(os4.homedir(), ".codex", "config.toml"), "utf8");
+          const cfg = fs3.readFileSync(path4.join(os4.homedir(), ".codex", "config.toml"), "utf8");
           const m = /^model\s*=\s*"([^"]+)"/m.exec(cfg);
           if (m && !models[m[1]]) models[m[1]] = { id: m[1], name: `${m[1]} (config)` };
         } catch {
@@ -4683,7 +4761,7 @@ var init_daemon = __esm({
 
 // src/cli.ts
 init_util();
-import fs3 from "node:fs";
+import fs4 from "node:fs";
 import fsp4 from "node:fs/promises";
 import path6 from "node:path";
 import os5 from "node:os";
@@ -4708,7 +4786,7 @@ function pluginPath() {
 }
 function readCfg() {
   try {
-    return JSON.parse(fs3.readFileSync(cfgPath(), "utf8"));
+    return JSON.parse(fs4.readFileSync(cfgPath(), "utf8"));
   } catch {
     return {};
   }
@@ -4754,10 +4832,10 @@ async function ask(question, hidden = false) {
 }
 function guessOpencode() {
   try {
-    execFileSync("which", ["opencode"], { stdio: "ignore" });
+    execFileSync(process.platform === "win32" ? "where" : "which", ["opencode"], { stdio: "ignore" });
     return true;
   } catch {
-    return fs3.existsSync("/Applications/OpenCode.app");
+    return process.platform === "darwin" && fs4.existsSync("/Applications/OpenCode.app");
   }
 }
 async function checkToken(token, proxy) {
@@ -4795,7 +4873,7 @@ async function cmdSetup(args) {
   const prev = readCfg();
   const legacy = (() => {
     try {
-      return JSON.parse(fs3.readFileSync(path6.join(ravenHomeLegacyFile(), "telegram-bridge.json"), "utf8"));
+      return JSON.parse(fs4.readFileSync(path6.join(ravenHomeLegacyFile(), "telegram-bridge.json"), "utf8"));
     } catch {
       return null;
     }
@@ -4820,7 +4898,7 @@ async function cmdSetup(args) {
   const pdir = opencodePluginsDir();
   await fsp4.mkdir(pdir, { recursive: true });
   const bundled = path6.join(HERE, "raven-plugin.js");
-  if (fs3.existsSync(bundled)) {
+  if (fs4.existsSync(bundled)) {
     await fsp4.copyFile(bundled, pluginPath());
     console.log(`opencode plugin \u2192 ${pluginPath()}`);
   } else {
@@ -4834,17 +4912,22 @@ async function cmdSetup(args) {
     }
   }
   if (!noService) {
-    try {
-      await installService();
-    } catch (e) {
-      console.log(`service install skipped: ${e?.message ?? e}`);
+    if (process.platform !== "darwin") {
+      console.log("background service is macOS (launchd) only \u2014 skipped.");
+      console.log("run `raven run` under your supervisor to keep the daemon alive (see README).");
+    } else {
+      try {
+        await installService();
+      } catch (e) {
+        console.log(`service install skipped: ${e?.message ?? e}`);
+      }
     }
   }
   console.log("");
   console.log("Next steps:");
   console.log("  1. Restart OpenCode Desktop (or run `raven run` to start the daemon now).");
   console.log("  2. Open your bot in Telegram and send /start.");
-  console.log("  3. Raven prints a 6-character pairing code (terminal + macOS notification).");
+  console.log("  3. Raven prints a 6-character pairing code in the terminal (plus a desktop notification on macOS).");
   console.log(`  4. Reply to the bot with: /pair THECODE \u2014 that links this chat. Anyone unpaired can never read your sessions.`);
   if (yes) console.log("(non-interactive: done)");
 }
@@ -4909,14 +4992,14 @@ async function cmdStatus() {
   const home = ravenHome();
   const owner = (() => {
     try {
-      return JSON.parse(fs3.readFileSync(path6.join(home, "leader.lock", "owner.json"), "utf8"));
+      return JSON.parse(fs4.readFileSync(path6.join(home, "leader.lock", "owner.json"), "utf8"));
     } catch {
       return null;
     }
   })();
   const state = (() => {
     try {
-      return JSON.parse(fs3.readFileSync(path6.join(home, "state.json"), "utf8"));
+      return JSON.parse(fs4.readFileSync(path6.join(home, "state.json"), "utf8"));
     } catch {
       return null;
     }
@@ -4936,23 +5019,68 @@ async function cmdStatus() {
 }
 async function cmdLogs(follow) {
   const file = path6.join(ravenHome(), "raven.log");
-  try {
-    execFileSync("tail", follow ? ["-f", file] : ["-n", "80", file], { stdio: "inherit" });
-  } catch {
+  const printTail = (n) => {
+    try {
+      const raw = fs4.readFileSync(file, "utf8").split("\n");
+      const lines = raw[raw.length - 1] === "" ? raw.slice(0, -1) : raw;
+      for (const l of lines.slice(-n)) console.log(l);
+    } catch {
+      console.log(`no log file yet at ${file} (is the daemon running?)`);
+    }
+  };
+  if (!follow) {
+    printTail(80);
+    return;
   }
+  printTail(20);
+  let pos = 0;
+  try {
+    pos = fs4.statSync(file).size;
+  } catch {
+    return;
+  }
+  const timer = setInterval(() => {
+    try {
+      const size = fs4.statSync(file).size;
+      if (size < pos) pos = 0;
+      if (size > pos) {
+        const fd = fs4.openSync(file, "r");
+        const buf = Buffer.alloc(size - pos);
+        fs4.readSync(fd, buf, 0, buf.length, pos);
+        fs4.closeSync(fd);
+        pos = size;
+        process.stdout.write(buf.toString("utf8"));
+      }
+    } catch {
+    }
+  }, 500);
+  const stop = () => {
+    clearInterval(timer);
+    process.exit(0);
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+}
+function launchdGuard() {
+  if (process.platform === "darwin") return true;
+  console.log("the background service is macOS (launchd) only \u2014 run `raven run` under your supervisor instead.");
+  return false;
 }
 async function cmdUninstall(purge) {
-  try {
-    execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" });
-  } catch {
-  }
-  try {
-    await fsp4.rm(plistPath(), { force: true });
-  } catch {
+  if (process.platform === "darwin") {
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" });
+    } catch {
+    }
+    try {
+      await fsp4.rm(plistPath(), { force: true });
+    } catch {
+    }
+    console.log("removed service");
   }
   await fsp4.rm(pluginPath(), { force: true });
   for (const l of legacyPluginPaths()) await fsp4.rm(l, { force: true });
-  console.log("removed service + plugin");
+  console.log("removed plugin");
   if (purge) {
     await fsp4.rm(ravenHome(), { recursive: true, force: true });
     console.log("removed", ravenHome());
@@ -4970,6 +5098,7 @@ async function main() {
       await cmdRun();
       break;
     case "service":
+      if (!launchdGuard()) break;
       if (rest[0] === "remove") {
         try {
           execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" });
@@ -4990,7 +5119,7 @@ async function main() {
       break;
     case "pair": {
       try {
-        const stt = JSON.parse(fs3.readFileSync(path6.join(ravenHome(), "state.json"), "utf8"));
+        const stt = JSON.parse(fs4.readFileSync(path6.join(ravenHome(), "state.json"), "utf8"));
         const pr = stt.pairing;
         if (pr && Date.now() - pr.createdAt < 10 * 6e4) {
           console.log(`Pairing request from "${pr.name}" (chat ${pr.chatId}) \u2014 code: ${pr.code}`);
@@ -5018,9 +5147,9 @@ async function main() {
           "raven \u2014 Telegram bridge for opencode \xB7 Claude Code \xB7 Codex",
           "",
           "usage:",
-          "  raven setup            wizard: token, config, plugin, launchd service",
+          "  raven setup            wizard: token, config, plugin, background service (macOS)",
           "  raven run              run the daemon in the foreground",
-          "  raven service install|remove|status",
+          "  raven service install|remove|status   (macOS launchd only)",
           "  raven pair             show the pending pairing code (send /start in the new chat first)",
           "  raven status           what's paired, who's leader, where logs live",
           "  raven logs [-f]        tail the bridge log",
