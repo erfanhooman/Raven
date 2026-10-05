@@ -1,0 +1,46 @@
+{
+  "name": "@erfanhooman/raven",
+  "version": "1.0.0",
+  "description": "Talk to your coding agents from Telegram: opencode, Claude Code, and Codex — one bot, live sessions, approvals, questions, and push notifications.",
+  "type": "module",
+  "license": "MIT",
+  "author": "erfanhooman",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erfanhooman/raven.git"
+  },
+  "keywords": [
+    "telegram",
+    "opencode",
+    "claude-code",
+    "codex",
+    "ai-agents",
+    "remote-control"
+  ],
+  "bin": {
+    "raven": "dist/raven-cli.js"
+  },
+  "main": "dist/raven-cli.js",
+  "files": [
+    "dist/raven-cli.js",
+    "dist/raven-plugin.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "mock": "node test/mock-telegram.mjs",
+    "test": "npm run build && node test/e2e-opencode.mjs",
+    "test:agents": "npm run build && node test/e2e-agents.mjs",
+    "smoke:agents": "npm run build && node test/e2e-agents.mjs --real"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.6.0"
+  }
+}
