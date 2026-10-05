@@ -4878,11 +4878,21 @@ ${tail.map((t) => `    <string>${t}</string>`).join("\n")}
 `;
   await fsp4.mkdir(path6.dirname(plistPath()), { recursive: true });
   await fsp4.writeFile(plistPath(), plist);
+  const domain = `gui/${process.getuid?.() ?? 501}`;
+  const label = "dev.raven.daemon";
   try {
-    execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" });
+    execFileSync("launchctl", ["bootout", domain + "/" + label], { stdio: "ignore" });
   } catch {
   }
-  execFileSync("launchctl", ["bootstrap", `gui/${process.getuid?.() ?? 501}`, plistPath()], { stdio: "inherit" });
+  for (let i = 0; i < 10; i++) {
+    try {
+      execFileSync("launchctl", ["print", domain + "/" + label], { stdio: "ignore" });
+    } catch {
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  execFileSync("launchctl", ["bootstrap", domain, plistPath()], { stdio: "inherit" });
   console.log(`launchd service installed \u2192 ${plistPath()}`);
 }
 async function cmdRun() {
