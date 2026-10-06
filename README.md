@@ -99,10 +99,10 @@ Both `raven setup` and `./install.sh` accept:
 
 1. Restart OpenCode Desktop (plugins load at startup), or run `raven run` in a terminal.
 2. Open your bot in Telegram and send `/start`.
-3. Raven prints a 6-character one-time code in the terminal and as a macOS notification. You can re-display it anytime with `raven pair`.
+3. Raven prints a big 6-character one-time code banner in the terminal of the running daemon (plus a desktop notification on macOS/Windows/Linux). You can re-display it anytime with `raven pair` — that command also lists all paired chats.
 4. Send `/pair CODE` to the bot. The Home screen appears and your chat ID is whitelisted.
 
-To add another device or account, repeat the steps from that chat. To revoke access, send `/unpair` (self) or `/unpair <chatId>` (revoke another chat) from any paired chat.
+To add another device or account, repeat the steps from that chat. To see who's paired, use `raven pair` in a terminal or `/pairs` in Telegram. To revoke access: `raven pair revoke <chatId>` from a terminal (the removed chat gets a Telegram notice), or `/unpair` (self) / `/unpair <chatId>` from any paired chat. Both sides stay in sync — the config file is the single source of truth.
 
 ## Features
 
@@ -177,7 +177,8 @@ Create a `New Codex thread` or open existing threads from `codex app-server`. Su
 ```text
 raven setup            wizard: token, config, plugin, background service (macOS)
 raven run              run the daemon in the foreground (Ctrl-C stops)
-raven pair             show the pending pairing code
+raven pair             pending pairing code + list of paired chats
+raven pair revoke <chatId>   unpair a chat from the terminal (notifies it)
 raven status           paired chats, leader, link health, detected client binaries
 raven logs [-f]        tail the bridge log (pure-Node, works on all platforms)
 raven service install|remove|status   (macOS launchd only)
@@ -191,7 +192,7 @@ raven uninstall [--purge]
 A bot token alone grants no access. Every Telegram chat must be paired from a person with access to your computer:
 
 1. An unknown chat sends `/start`; Raven generates a 6-character one-time code.
-2. The code is shown only on your machine (terminal, notification, `raven pair`).
+2. The code is shown only on your machine (terminal banner, desktop notification, `raven pair`).
 3. The user sends `/pair CODE` to the bot within 10 minutes.
 4. On success, the chat ID is added to `authorizedChatIds` in `~/.config/raven/raven.json`.
 

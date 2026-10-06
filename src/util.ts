@@ -44,3 +44,26 @@ export function spawnShellFor(bin: string): boolean {
   const b = bin.toLowerCase()
   return b.endsWith(".cmd") || b.endsWith(".bat")
 }
+
+// The pairing-code banner. Printed by the daemon to the terminal when a chat
+// sends /start, and by `raven pair`. The code never goes to Telegram — this
+// banner (and the desktop notification) are its only displays.
+export function pairingBanner(code: string, who?: string, ttlMin = 10): string {
+  const line = "═".repeat(58)
+  return [
+    "",
+    line,
+    `  🔑  RAVEN PAIRING CODE:  ${code}`,
+    "",
+    `  In Telegram send:  /pair ${code}`,
+    who ? `  From ${who} — expires in ${ttlMin} min` : `  Expires in ${ttlMin} min`,
+    "  Re-read anytime:  raven pair",
+    line,
+    "",
+  ].join("\n")
+}
+
+// One line of the paired-chats list: `123456 — "Name"`.
+export function pairedChatLine(id: number, name?: string): string {
+  return name ? `  • ${id} — "${name}"` : `  • ${id}`
+}

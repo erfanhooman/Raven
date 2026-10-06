@@ -8,7 +8,7 @@ import os from "node:os"
 import { createInterface } from "node:readline"
 import { execFileSync, spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { ravenHome } from "./util.js"
+import { ravenHome, pairingBanner, pairedChatLine } from "./util.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -180,12 +180,27 @@ async function cmdSetup(args: string[]) {
     }
   }
 
+  // If a pairing request is already waiting, show its code right now — this
+  // is where you'd otherwise have to hunt for it.
+  try {
+    const st = JSON.parse(fs.readFileSync(path.join(ravenHome(), "state.json"), "utf8"))
+    const pr = st?.pairing
+    if (pr && Date.now() - pr.createdAt < 10 * 60_000) {
+      process.stdout.write(pairingBanner(pr.code, `"${pr.name}" (chat ${pr.chatId})`))
+    }
+  } catch {}
+
   console.log("")
   console.log("Next steps:")
   console.log("  1. Restart OpenCode Desktop (or run `raven run` to start the daemon now).")
   console.log("  2. Open your bot in Telegram and send /start.")
-  console.log("  3. Raven prints a 6-character pairing code in the terminal (plus a desktop notification on macOS).")
+  console.log("  3. A big pairing-code banner prints in the terminal of the running daemon (plus a desktop notification).")
   console.log(`  4. Reply to the bot with: /pair THECODE — that links this chat. Anyone unpaired can never read your sessions.`)
+  console.log("")
+  console.log("  Manage pairing:")
+  console.log("    raven pair              show the pending code + paired chats")
+  console.log("    raven pair revoke <id>  unpair a chat (it gets notified)")
+  console.log("    /pairs  ·  /unpair <id> same from inside Telegram")
   if (yes) console.log("(non-interactive: done)")
 }
 
@@ -254,6 +269,73 @@ async function cmdRun(): Promise<void> {
   console.log(`[raven] daemon running (home: ${ravenHome()}) — Ctrl-C to stop`)
 }
 
+// Best-effort Telegram notify from the CLI itself (used by `raven pair
+// revoke`): the config change takes effect immediately for the running
+// daemon, this only tells the removed chat.
+async function tgNotify(cfg: any, chatId: number, text: string): Promise<boolean> {
+  const token = String(cfg?.botToken ?? "")
+  if (!token) return false
+  const apiBase = String(cfg?.apiBase || "https://api.telegram.org")
+  const url = `${apiBase}/bot${token}/sendMessage`
+  const body = JSON.stringify({ chat_id: chatId, text })
+  try {
+    if (cfg.proxy) {
+      const out = execFileSync(
+        "curl",
+        ["-sS", "-x", String(cfg.proxy), "-X", "POST", "-H", "content-type: application/json", "--data-binary", "@-", "-o", process.platform === "win32" ? "nul" : "/dev/null", "-w", "%{http_code}", url],
+        { input: body, timeout: 10_000, encoding: "utf8" },
+      )
+      return out.trim() === "200"
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(8_000),
+    })
+    const j: any = await res.json().catch(() => ({}))
+    return !!j.ok
+  } catch {
+    return false
+  }
+}
+
+async function cmdPairRevoke(args: string[]): Promise<void> {
+  const id = Number(args[0])
+  if (!Number.isFinite(id) || id <= 0) {
+    console.error("usage: raven pair revoke <chatId>")
+    process.exitCode = 1
+    return
+  }
+  const cfg = readCfg()
+  const ids: number[] = (Array.isArray(cfg.authorizedChatIds) ? cfg.authorizedChatIds : []).map(Number)
+  if (!ids.includes(id)) {
+    console.log(`chat ${id} is not paired.`)
+    return
+  }
+  const next = { ...cfg, authorizedChatIds: ids.filter((n) => n !== id) }
+  const name = cfg.chatNames?.[String(id)]
+  if (cfg.chatNames && typeof cfg.chatNames === "object") {
+    const names = { ...cfg.chatNames }
+    delete names[String(id)]
+    next.chatNames = names
+  }
+  fs.writeFileSync(cfgPath(), JSON.stringify(next, null, 2), { mode: 0o600 })
+  console.log(`unpaired chat ${id}${name ? ` ("${name}")` : ""}`)
+  // Drop a pending pairing that belongs to this chat too.
+  try {
+    const sp = path.join(ravenHome(), "state.json")
+    const st = JSON.parse(fs.readFileSync(sp, "utf8"))
+    if (st.pairing && st.pairing.chatId === id) {
+      st.pairing = null
+      fs.writeFileSync(sp, JSON.stringify(st, null, 2), { mode: 0o600 })
+      console.log("cleared its pending pairing request")
+    }
+  } catch {}
+  const ok = await tgNotify(next, id, `⏹ Chat ${id} was unpaired from the terminal.\nSend /start to the bot to request pairing again.`)
+  console.log(ok ? `notified chat ${id} on Telegram` : `note: chat ${id} not notified (daemon offline, no network, or chat already blocked the bot)`)
+}
+
 async function cmdStatus(): Promise<void> {
   const cfg = readCfg()
   const home = ravenHome()
@@ -272,7 +354,13 @@ async function cmdStatus(): Promise<void> {
     }
   })()
   console.log("config     :", cfgPath(), cfg.botToken ? `(token ${String(cfg.botToken).slice(0, 6)}…)` : "(missing!)")
-  console.log("paired     :", (cfg.authorizedChatIds ?? []).join(", ") || "none — send /start to the bot to pair")
+  const pairedIds: number[] = (cfg.authorizedChatIds ?? []).map(Number)
+  console.log(
+    "paired     :",
+    pairedIds.length
+      ? pairedIds.map((id) => (cfg.chatNames?.[String(id)] ? `${id} ("${cfg.chatNames[String(id)]}")` : String(id))).join(", ")
+      : "none — send /start to the bot to pair",
+  )
   console.log("leader     :", owner ? `${String(owner.key).slice(0, 8)} (pid ${owner.pid})` : "none")
   console.log("link       :", state?.link?.status ?? "?", state?.link?.lastError ? `(${state.link.lastError.slice(0, 60)})` : "")
   console.log("opencode   :", guessOpencode() ? "found" : "not found")
@@ -385,17 +473,33 @@ async function main() {
       }
       break
     case "pair": {
+      const sub = (rest[0] ?? "").toLowerCase()
+      if (sub === "revoke" || sub === "remove" || sub === "unpair") {
+        await cmdPairRevoke(rest.slice(1))
+        break
+      }
+      let pending = false
       try {
         const stt = JSON.parse(fs.readFileSync(path.join(ravenHome(), "state.json"), "utf8"))
         const pr = stt.pairing
         if (pr && Date.now() - pr.createdAt < 10 * 60_000) {
-          console.log(`Pairing request from "${pr.name}" (chat ${pr.chatId}) — code: ${pr.code}`)
+          process.stdout.write(pairingBanner(pr.code, `"${pr.name}" (chat ${pr.chatId})`))
           console.log(`They should send:  /pair ${pr.code}`)
-        } else {
-          console.log("No pending pairing request. From the new Telegram chat send /start to the bot first, then run 'raven pair' again to read its code.")
+          pending = true
         }
-      } catch {
-        console.log("No pairing request found (is the daemon or OpenCode running?). Start it with 'raven run' or open OpenCode.")
+      } catch {}
+      const cfg = readCfg()
+      const ids: number[] = (Array.isArray(cfg.authorizedChatIds) ? cfg.authorizedChatIds : []).map(Number)
+      if (ids.length) {
+        console.log(`Paired chats (${ids.length}):`)
+        for (const id of ids) console.log(pairedChatLine(id, cfg.chatNames?.[String(id)]))
+        console.log(`Revoke:  raven pair revoke <chatId>   (or /unpair <chatId> in Telegram)`)
+        console.log(`List from Telegram:  /pairs`)
+      } else if (!pending) {
+        console.log("No pending pairing request and no paired chats. From the new Telegram chat send /start to the bot first, then run 'raven pair' again to read its code.")
+        console.log("(is the daemon running? `raven run` or restart OpenCode)")
+      } else {
+        console.log(`Paired chats: none yet — pair this one with:  /pair <code above>`)
       }
       break
     }
@@ -417,7 +521,8 @@ async function main() {
           "  raven setup            wizard: token, config, plugin, background service (macOS)",
           "  raven run              run the daemon in the foreground",
           "  raven service install|remove|status   (macOS launchd only)",
-          "  raven pair             show the pending pairing code (send /start in the new chat first)",
+          "  raven pair             pending pairing code + list of paired chats",
+          "  raven pair revoke <chatId>   unpair a chat (also clears its pending code, notifies it)",
           "  raven status           what's paired, who's leader, where logs live",
           "  raven logs [-f]        tail the bridge log",
           "  raven uninstall [--purge]",

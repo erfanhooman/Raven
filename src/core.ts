@@ -8,7 +8,7 @@ import tls from "node:tls"
 import { promises as dns } from "node:dns"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { ravenHome } from "./util.js"
+import { ravenHome, pairingBanner, pairedChatLine } from "./util.js"
 
 type Dir = string
 type InstanceKey = string
@@ -132,6 +132,7 @@ const BOT_COMMANDS = new Set([
   "cancel",
   "agent",
   "pair",
+  "pairs",
   "unpair",
   "approve",
   "deny",
@@ -1666,9 +1667,11 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
     async function announcePairing(req: PairingReq) {
       const msg = `🔐 Pairing request from "${req.name}" (chat ${req.chatId}) — code ${req.code} (10 min)`
       try {
-        console.log(`[raven] ${msg}`)
+        // The terminal IS the display for the code — print it big so it
+        // can't be missed right after /start.
+        process.stdout.write(pairingBanner(req.code, `"${req.name}" (chat ${req.chatId})`))
       } catch {}
-      macNotify("Raven — pairing", `Code ${req.code} — send /pair ${req.code} to the bot`)
+      desktopNotify("Raven — pairing", `Code ${req.code} — send /pair ${req.code} to the bot`)
       log("info", msg)
     }
 
@@ -1685,7 +1688,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       }
     }
 
-    async function patchConfigAddChat(chatId: number): Promise<void> {
+    async function patchConfigAddChat(chatId: number, name?: string): Promise<void> {
       const cur = await readJSON<any>(CFG_FILE, {})
       const ids = new Set<number>()
       for (const x of Array.isArray(cur?.authorizedChatIds) ? cur.authorizedChatIds : []) ids.add(Number(x))
@@ -1693,6 +1696,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       ids.add(chatId)
       const next = { ...cur, authorizedChatIds: [...ids] }
       delete next.chatIds
+      if (name) next.chatNames = { ...(cur?.chatNames ?? {}), [String(chatId)]: name }
       await atomicWrite(CFG_FILE, JSON.stringify(next, null, 2), 0o600)
       log("info", `paired chat ${chatId}`)
     }
@@ -1705,12 +1709,17 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       ids.delete(chatId)
       const next = { ...cur, authorizedChatIds: [...ids] }
       delete next.chatIds
+      if (cur?.chatNames && typeof cur.chatNames === "object") {
+        const names = { ...cur.chatNames }
+        delete names[String(chatId)]
+        next.chatNames = names
+      }
       await atomicWrite(CFG_FILE, JSON.stringify(next, null, 2), 0o600)
       log("info", `unpaired chat ${chatId}`)
     }
 
     async function completePairing(cfg: any, req: PairingReq): Promise<void> {
-      await patchConfigAddChat(req.chatId)
+      await patchConfigAddChat(req.chatId, req.name)
       await mutateState((s) => {
         if (s.pairing && s.pairing.chatId === req.chatId) s.pairing = null
       })
@@ -2964,6 +2973,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
           { command: "new", description: "New session" },
           { command: "agent", description: "Open an agent workspace" },
           { command: "inbox", description: "Approvals and questions" },
+          { command: "pairs", description: "List paired chats" },
           { command: "settings", description: "Notifications and profile" },
           { command: "abort", description: "Stop the focused session" },
           { command: "skip", description: "Answer the pending question with none" },
@@ -3668,8 +3678,22 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
             chatId,
             req
               ? `⏳ Pairing pending: "${req.name}" (chat ${req.chatId}) — code shown on the computer${cfg.ownerApprove ? ", owner approval required" : ""}.`
-              : `This chat is already paired. To add another Telegram account: /start there, read the 6-character code printed on this computer, then send /pair CODE there.`,
+              : `This chat is already paired. To add another Telegram account: /start there, read the 6-character code printed on this computer, then send /pair CODE there.\n\nList: /pairs · Revoke: /unpair <chatId>`,
           )
+          return
+        }
+        case "pairs": {
+          const raw = await readJSON<any>(CFG_FILE, {})
+          const names: Record<string, string> = raw?.chatNames && typeof raw.chatNames === "object" ? raw.chatNames : {}
+          const stL = await loadState()
+          const lines = [`${cfg.botName ?? "Raven"} — paired chats (${cfg.authorizedChatIds.length}):`]
+          for (const id of cfg.authorizedChatIds) lines.push(pairedChatLine(id, names[String(id)]))
+          if (stL.pairing) {
+            const p = stL.pairing
+            lines.push("", `⏳ Pending request: "${p.name}" (chat ${p.chatId}) — code expires soon`)
+          }
+          lines.push("", `Remove one: /unpair <chatId>`)
+          await tgSend(cfg, chatId, lines.join("\n"))
           return
         }
         case "unpair": {
@@ -3684,6 +3708,9 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
           }
           await patchConfigRemoveChat(target)
           await tgSend(cfg, chatId, `⏹ Chat ${target} unpaired. /start again there to pair anew.`)
+          if (target !== chatId) {
+            await tgSend(cfg, target, `⏹ You were unpaired from ${cfg.botName ?? "Raven"} (chat ${target}).\nSend /start to request pairing again.`).catch(() => {})
+          }
           return
         }
         case "approve":

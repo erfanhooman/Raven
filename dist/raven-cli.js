@@ -43,6 +43,23 @@ function spawnShellFor(bin) {
   const b = bin.toLowerCase();
   return b.endsWith(".cmd") || b.endsWith(".bat");
 }
+function pairingBanner(code, who, ttlMin = 10) {
+  const line = "\u2550".repeat(58);
+  return [
+    "",
+    line,
+    `  \u{1F511}  RAVEN PAIRING CODE:  ${code}`,
+    "",
+    `  In Telegram send:  /pair ${code}`,
+    who ? `  From ${who} \u2014 expires in ${ttlMin} min` : `  Expires in ${ttlMin} min`,
+    "  Re-read anytime:  raven pair",
+    line,
+    ""
+  ].join("\n");
+}
+function pairedChatLine(id, name) {
+  return name ? `  \u2022 ${id} \u2014 "${name}"` : `  \u2022 ${id}`;
+}
 var init_util = __esm({
   "src/util.ts"() {
     "use strict";
@@ -1592,10 +1609,10 @@ Connection: close\r
     async function announcePairing(req) {
       const msg = `\u{1F510} Pairing request from "${req.name}" (chat ${req.chatId}) \u2014 code ${req.code} (10 min)`;
       try {
-        console.log(`[raven] ${msg}`);
+        process.stdout.write(pairingBanner(req.code, `"${req.name}" (chat ${req.chatId})`));
       } catch {
       }
-      macNotify("Raven \u2014 pairing", `Code ${req.code} \u2014 send /pair ${req.code} to the bot`);
+      desktopNotify2("Raven \u2014 pairing", `Code ${req.code} \u2014 send /pair ${req.code} to the bot`);
       log("info", msg);
     }
     async function askOwnersToApprove(cfg, req) {
@@ -1612,7 +1629,7 @@ Approve this account? (they must still enter the code shown on this computer)`;
         });
       }
     }
-    async function patchConfigAddChat(chatId) {
+    async function patchConfigAddChat(chatId, name) {
       const cur = await readJSON(CFG_FILE, {});
       const ids = /* @__PURE__ */ new Set();
       for (const x of Array.isArray(cur?.authorizedChatIds) ? cur.authorizedChatIds : []) ids.add(Number(x));
@@ -1620,6 +1637,7 @@ Approve this account? (they must still enter the code shown on this computer)`;
       ids.add(chatId);
       const next = { ...cur, authorizedChatIds: [...ids] };
       delete next.chatIds;
+      if (name) next.chatNames = { ...cur?.chatNames ?? {}, [String(chatId)]: name };
       await atomicWrite2(CFG_FILE, JSON.stringify(next, null, 2), 384);
       log("info", `paired chat ${chatId}`);
     }
@@ -1631,11 +1649,16 @@ Approve this account? (they must still enter the code shown on this computer)`;
       ids.delete(chatId);
       const next = { ...cur, authorizedChatIds: [...ids] };
       delete next.chatIds;
+      if (cur?.chatNames && typeof cur.chatNames === "object") {
+        const names = { ...cur.chatNames };
+        delete names[String(chatId)];
+        next.chatNames = names;
+      }
       await atomicWrite2(CFG_FILE, JSON.stringify(next, null, 2), 384);
       log("info", `unpaired chat ${chatId}`);
     }
     async function completePairing(cfg, req) {
-      await patchConfigAddChat(req.chatId);
+      await patchConfigAddChat(req.chatId, req.name);
       await mutateState2((s) => {
         if (s.pairing && s.pairing.chatId === req.chatId) s.pairing = null;
       });
@@ -2739,6 +2762,7 @@ ${out || "(done)"}`, 3900));
           { command: "new", description: "New session" },
           { command: "agent", description: "Open an agent workspace" },
           { command: "inbox", description: "Approvals and questions" },
+          { command: "pairs", description: "List paired chats" },
           { command: "settings", description: "Notifications and profile" },
           { command: "abort", description: "Stop the focused session" },
           { command: "skip", description: "Answer the pending question with none" }
@@ -3407,8 +3431,24 @@ ${out || "(done)"}`, 3900));
           await tgSend(
             cfg,
             chatId,
-            req ? `\u23F3 Pairing pending: "${req.name}" (chat ${req.chatId}) \u2014 code shown on the computer${cfg.ownerApprove ? ", owner approval required" : ""}.` : `This chat is already paired. To add another Telegram account: /start there, read the 6-character code printed on this computer, then send /pair CODE there.`
+            req ? `\u23F3 Pairing pending: "${req.name}" (chat ${req.chatId}) \u2014 code shown on the computer${cfg.ownerApprove ? ", owner approval required" : ""}.` : `This chat is already paired. To add another Telegram account: /start there, read the 6-character code printed on this computer, then send /pair CODE there.
+
+List: /pairs \xB7 Revoke: /unpair <chatId>`
           );
+          return;
+        }
+        case "pairs": {
+          const raw = await readJSON(CFG_FILE, {});
+          const names = raw?.chatNames && typeof raw.chatNames === "object" ? raw.chatNames : {};
+          const stL = await loadState();
+          const lines = [`${cfg.botName ?? "Raven"} \u2014 paired chats (${cfg.authorizedChatIds.length}):`];
+          for (const id of cfg.authorizedChatIds) lines.push(pairedChatLine(id, names[String(id)]));
+          if (stL.pairing) {
+            const p = stL.pairing;
+            lines.push("", `\u23F3 Pending request: "${p.name}" (chat ${p.chatId}) \u2014 code expires soon`);
+          }
+          lines.push("", `Remove one: /unpair <chatId>`);
+          await tgSend(cfg, chatId, lines.join("\n"));
           return;
         }
         case "unpair": {
@@ -3423,6 +3463,11 @@ ${out || "(done)"}`, 3900));
           }
           await patchConfigRemoveChat(target);
           await tgSend(cfg, chatId, `\u23F9 Chat ${target} unpaired. /start again there to pair anew.`);
+          if (target !== chatId) {
+            await tgSend(cfg, target, `\u23F9 You were unpaired from ${cfg.botName ?? "Raven"} (chat ${target}).
+Send /start to request pairing again.`).catch(() => {
+            });
+          }
           return;
         }
         case "approve":
@@ -3760,6 +3805,7 @@ var init_core = __esm({
       "cancel",
       "agent",
       "pair",
+      "pairs",
       "unpair",
       "approve",
       "deny"
@@ -4940,12 +4986,25 @@ async function cmdSetup(args) {
       }
     }
   }
+  try {
+    const st = JSON.parse(fs4.readFileSync(path6.join(ravenHome(), "state.json"), "utf8"));
+    const pr = st?.pairing;
+    if (pr && Date.now() - pr.createdAt < 10 * 6e4) {
+      process.stdout.write(pairingBanner(pr.code, `"${pr.name}" (chat ${pr.chatId})`));
+    }
+  } catch {
+  }
   console.log("");
   console.log("Next steps:");
   console.log("  1. Restart OpenCode Desktop (or run `raven run` to start the daemon now).");
   console.log("  2. Open your bot in Telegram and send /start.");
-  console.log("  3. Raven prints a 6-character pairing code in the terminal (plus a desktop notification on macOS).");
+  console.log("  3. A big pairing-code banner prints in the terminal of the running daemon (plus a desktop notification).");
   console.log(`  4. Reply to the bot with: /pair THECODE \u2014 that links this chat. Anyone unpaired can never read your sessions.`);
+  console.log("");
+  console.log("  Manage pairing:");
+  console.log("    raven pair              show the pending code + paired chats");
+  console.log("    raven pair revoke <id>  unpair a chat (it gets notified)");
+  console.log("    /pairs  \xB7  /unpair <id> same from inside Telegram");
   if (yes) console.log("(non-interactive: done)");
 }
 function ravenHomeLegacyFile() {
@@ -5004,6 +5063,69 @@ async function cmdRun() {
   process.on("SIGTERM", () => void bye());
   console.log(`[raven] daemon running (home: ${ravenHome()}) \u2014 Ctrl-C to stop`);
 }
+async function tgNotify(cfg, chatId, text) {
+  const token = String(cfg?.botToken ?? "");
+  if (!token) return false;
+  const apiBase = String(cfg?.apiBase || "https://api.telegram.org");
+  const url = `${apiBase}/bot${token}/sendMessage`;
+  const body = JSON.stringify({ chat_id: chatId, text });
+  try {
+    if (cfg.proxy) {
+      const out = execFileSync(
+        "curl",
+        ["-sS", "-x", String(cfg.proxy), "-X", "POST", "-H", "content-type: application/json", "--data-binary", "@-", "-o", process.platform === "win32" ? "nul" : "/dev/null", "-w", "%{http_code}", url],
+        { input: body, timeout: 1e4, encoding: "utf8" }
+      );
+      return out.trim() === "200";
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(8e3)
+    });
+    const j = await res.json().catch(() => ({}));
+    return !!j.ok;
+  } catch {
+    return false;
+  }
+}
+async function cmdPairRevoke(args) {
+  const id = Number(args[0]);
+  if (!Number.isFinite(id) || id <= 0) {
+    console.error("usage: raven pair revoke <chatId>");
+    process.exitCode = 1;
+    return;
+  }
+  const cfg = readCfg();
+  const ids = (Array.isArray(cfg.authorizedChatIds) ? cfg.authorizedChatIds : []).map(Number);
+  if (!ids.includes(id)) {
+    console.log(`chat ${id} is not paired.`);
+    return;
+  }
+  const next = { ...cfg, authorizedChatIds: ids.filter((n) => n !== id) };
+  const name = cfg.chatNames?.[String(id)];
+  if (cfg.chatNames && typeof cfg.chatNames === "object") {
+    const names = { ...cfg.chatNames };
+    delete names[String(id)];
+    next.chatNames = names;
+  }
+  fs4.writeFileSync(cfgPath(), JSON.stringify(next, null, 2), { mode: 384 });
+  console.log(`unpaired chat ${id}${name ? ` ("${name}")` : ""}`);
+  try {
+    const sp = path6.join(ravenHome(), "state.json");
+    const st = JSON.parse(fs4.readFileSync(sp, "utf8"));
+    if (st.pairing && st.pairing.chatId === id) {
+      st.pairing = null;
+      fs4.writeFileSync(sp, JSON.stringify(st, null, 2), { mode: 384 });
+      console.log("cleared its pending pairing request");
+    }
+  } catch {
+  }
+  const ok = await tgNotify(next, id, `\u23F9 Chat ${id} was unpaired from the terminal.
+Send /start to the bot to request pairing again.`);
+  console.log(ok ? `notified chat ${id} on Telegram` : `note: chat ${id} not notified (daemon offline, no network, or chat already blocked the bot)`);
+}
 async function cmdStatus() {
   const cfg = readCfg();
   const home = ravenHome();
@@ -5022,7 +5144,11 @@ async function cmdStatus() {
     }
   })();
   console.log("config     :", cfgPath(), cfg.botToken ? `(token ${String(cfg.botToken).slice(0, 6)}\u2026)` : "(missing!)");
-  console.log("paired     :", (cfg.authorizedChatIds ?? []).join(", ") || "none \u2014 send /start to the bot to pair");
+  const pairedIds = (cfg.authorizedChatIds ?? []).map(Number);
+  console.log(
+    "paired     :",
+    pairedIds.length ? pairedIds.map((id) => cfg.chatNames?.[String(id)] ? `${id} ("${cfg.chatNames[String(id)]}")` : String(id)).join(", ") : "none \u2014 send /start to the bot to pair"
+  );
   console.log("leader     :", owner ? `${String(owner.key).slice(0, 8)} (pid ${owner.pid})` : "none");
   console.log("link       :", state?.link?.status ?? "?", state?.link?.lastError ? `(${state.link.lastError.slice(0, 60)})` : "");
   console.log("opencode   :", guessOpencode() ? "found" : "not found");
@@ -5135,17 +5261,34 @@ async function main() {
       }
       break;
     case "pair": {
+      const sub = (rest[0] ?? "").toLowerCase();
+      if (sub === "revoke" || sub === "remove" || sub === "unpair") {
+        await cmdPairRevoke(rest.slice(1));
+        break;
+      }
+      let pending = false;
       try {
         const stt = JSON.parse(fs4.readFileSync(path6.join(ravenHome(), "state.json"), "utf8"));
         const pr = stt.pairing;
         if (pr && Date.now() - pr.createdAt < 10 * 6e4) {
-          console.log(`Pairing request from "${pr.name}" (chat ${pr.chatId}) \u2014 code: ${pr.code}`);
+          process.stdout.write(pairingBanner(pr.code, `"${pr.name}" (chat ${pr.chatId})`));
           console.log(`They should send:  /pair ${pr.code}`);
-        } else {
-          console.log("No pending pairing request. From the new Telegram chat send /start to the bot first, then run 'raven pair' again to read its code.");
+          pending = true;
         }
       } catch {
-        console.log("No pairing request found (is the daemon or OpenCode running?). Start it with 'raven run' or open OpenCode.");
+      }
+      const cfg = readCfg();
+      const ids = (Array.isArray(cfg.authorizedChatIds) ? cfg.authorizedChatIds : []).map(Number);
+      if (ids.length) {
+        console.log(`Paired chats (${ids.length}):`);
+        for (const id of ids) console.log(pairedChatLine(id, cfg.chatNames?.[String(id)]));
+        console.log(`Revoke:  raven pair revoke <chatId>   (or /unpair <chatId> in Telegram)`);
+        console.log(`List from Telegram:  /pairs`);
+      } else if (!pending) {
+        console.log("No pending pairing request and no paired chats. From the new Telegram chat send /start to the bot first, then run 'raven pair' again to read its code.");
+        console.log("(is the daemon running? `raven run` or restart OpenCode)");
+      } else {
+        console.log(`Paired chats: none yet \u2014 pair this one with:  /pair <code above>`);
       }
       break;
     }
@@ -5167,7 +5310,8 @@ async function main() {
           "  raven setup            wizard: token, config, plugin, background service (macOS)",
           "  raven run              run the daemon in the foreground",
           "  raven service install|remove|status   (macOS launchd only)",
-          "  raven pair             show the pending pairing code (send /start in the new chat first)",
+          "  raven pair             pending pairing code + list of paired chats",
+          "  raven pair revoke <chatId>   unpair a chat (also clears its pending code, notifies it)",
           "  raven status           what's paired, who's leader, where logs live",
           "  raven logs [-f]        tail the bridge log",
           "  raven uninstall [--purge]"

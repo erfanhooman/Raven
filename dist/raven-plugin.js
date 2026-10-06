@@ -24,6 +24,23 @@ function ravenHome() {
   const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(xdg, "raven");
 }
+function pairingBanner(code, who, ttlMin = 10) {
+  const line = "\u2550".repeat(58);
+  return [
+    "",
+    line,
+    `  \u{1F511}  RAVEN PAIRING CODE:  ${code}`,
+    "",
+    `  In Telegram send:  /pair ${code}`,
+    who ? `  From ${who} \u2014 expires in ${ttlMin} min` : `  Expires in ${ttlMin} min`,
+    "  Re-read anytime:  raven pair",
+    line,
+    ""
+  ].join("\n");
+}
+function pairedChatLine(id, name) {
+  return name ? `  \u2022 ${id} \u2014 "${name}"` : `  \u2022 ${id}`;
+}
 
 // src/core.ts
 var PAIR_TTL_MS = 10 * 6e4;
@@ -52,6 +69,7 @@ var BOT_COMMANDS = /* @__PURE__ */ new Set([
   "cancel",
   "agent",
   "pair",
+  "pairs",
   "unpair",
   "approve",
   "deny"
@@ -1590,10 +1608,10 @@ Connection: close\r
     async function announcePairing(req) {
       const msg = `\u{1F510} Pairing request from "${req.name}" (chat ${req.chatId}) \u2014 code ${req.code} (10 min)`;
       try {
-        console.log(`[raven] ${msg}`);
+        process.stdout.write(pairingBanner(req.code, `"${req.name}" (chat ${req.chatId})`));
       } catch {
       }
-      macNotify("Raven \u2014 pairing", `Code ${req.code} \u2014 send /pair ${req.code} to the bot`);
+      desktopNotify2("Raven \u2014 pairing", `Code ${req.code} \u2014 send /pair ${req.code} to the bot`);
       log("info", msg);
     }
     async function askOwnersToApprove(cfg, req) {
@@ -1610,7 +1628,7 @@ Approve this account? (they must still enter the code shown on this computer)`;
         });
       }
     }
-    async function patchConfigAddChat(chatId) {
+    async function patchConfigAddChat(chatId, name) {
       const cur = await readJSON(CFG_FILE, {});
       const ids = /* @__PURE__ */ new Set();
       for (const x of Array.isArray(cur?.authorizedChatIds) ? cur.authorizedChatIds : []) ids.add(Number(x));
@@ -1618,6 +1636,7 @@ Approve this account? (they must still enter the code shown on this computer)`;
       ids.add(chatId);
       const next = { ...cur, authorizedChatIds: [...ids] };
       delete next.chatIds;
+      if (name) next.chatNames = { ...cur?.chatNames ?? {}, [String(chatId)]: name };
       await atomicWrite2(CFG_FILE, JSON.stringify(next, null, 2), 384);
       log("info", `paired chat ${chatId}`);
     }
@@ -1629,11 +1648,16 @@ Approve this account? (they must still enter the code shown on this computer)`;
       ids.delete(chatId);
       const next = { ...cur, authorizedChatIds: [...ids] };
       delete next.chatIds;
+      if (cur?.chatNames && typeof cur.chatNames === "object") {
+        const names = { ...cur.chatNames };
+        delete names[String(chatId)];
+        next.chatNames = names;
+      }
       await atomicWrite2(CFG_FILE, JSON.stringify(next, null, 2), 384);
       log("info", `unpaired chat ${chatId}`);
     }
     async function completePairing(cfg, req) {
-      await patchConfigAddChat(req.chatId);
+      await patchConfigAddChat(req.chatId, req.name);
       await mutateState2((s) => {
         if (s.pairing && s.pairing.chatId === req.chatId) s.pairing = null;
       });
@@ -2737,6 +2761,7 @@ ${out || "(done)"}`, 3900));
           { command: "new", description: "New session" },
           { command: "agent", description: "Open an agent workspace" },
           { command: "inbox", description: "Approvals and questions" },
+          { command: "pairs", description: "List paired chats" },
           { command: "settings", description: "Notifications and profile" },
           { command: "abort", description: "Stop the focused session" },
           { command: "skip", description: "Answer the pending question with none" }
@@ -3405,8 +3430,24 @@ ${out || "(done)"}`, 3900));
           await tgSend(
             cfg,
             chatId,
-            req ? `\u23F3 Pairing pending: "${req.name}" (chat ${req.chatId}) \u2014 code shown on the computer${cfg.ownerApprove ? ", owner approval required" : ""}.` : `This chat is already paired. To add another Telegram account: /start there, read the 6-character code printed on this computer, then send /pair CODE there.`
+            req ? `\u23F3 Pairing pending: "${req.name}" (chat ${req.chatId}) \u2014 code shown on the computer${cfg.ownerApprove ? ", owner approval required" : ""}.` : `This chat is already paired. To add another Telegram account: /start there, read the 6-character code printed on this computer, then send /pair CODE there.
+
+List: /pairs \xB7 Revoke: /unpair <chatId>`
           );
+          return;
+        }
+        case "pairs": {
+          const raw = await readJSON(CFG_FILE, {});
+          const names = raw?.chatNames && typeof raw.chatNames === "object" ? raw.chatNames : {};
+          const stL = await loadState();
+          const lines = [`${cfg.botName ?? "Raven"} \u2014 paired chats (${cfg.authorizedChatIds.length}):`];
+          for (const id of cfg.authorizedChatIds) lines.push(pairedChatLine(id, names[String(id)]));
+          if (stL.pairing) {
+            const p = stL.pairing;
+            lines.push("", `\u23F3 Pending request: "${p.name}" (chat ${p.chatId}) \u2014 code expires soon`);
+          }
+          lines.push("", `Remove one: /unpair <chatId>`);
+          await tgSend(cfg, chatId, lines.join("\n"));
           return;
         }
         case "unpair": {
@@ -3421,6 +3462,11 @@ ${out || "(done)"}`, 3900));
           }
           await patchConfigRemoveChat(target);
           await tgSend(cfg, chatId, `\u23F9 Chat ${target} unpaired. /start again there to pair anew.`);
+          if (target !== chatId) {
+            await tgSend(cfg, target, `\u23F9 You were unpaired from ${cfg.botName ?? "Raven"} (chat ${target}).
+Send /start to request pairing again.`).catch(() => {
+            });
+          }
           return;
         }
         case "approve":

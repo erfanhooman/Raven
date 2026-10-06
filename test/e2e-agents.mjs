@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -95,7 +95,11 @@ async function main() {
     stdio: ["ignore", "pipe", "pipe"], detached: true,
   })
   children.push(daemon)
-  daemon.stdout.on("data", (d) => process.stdout.write(`  [daemon] ${d}`.slice(0, 200) + ""))
+  let daemonOut = ""
+  daemon.stdout.on("data", (d) => {
+    daemonOut += String(d)
+    process.stdout.write(`  [daemon] ${d}`.slice(0, 200) + "")
+  })
   daemon.stderr.on("data", (d) => process.stderr.write(`  [daemon:err] ${d}`))
   await waitUntil(() => daemonLog().includes("acquired leadership"), 30000, "daemon leader")
   say("  ✔ daemon is leader + polling")
@@ -109,6 +113,59 @@ async function main() {
   await sendText(`/pair ${pairing.code}`)
   await expectLog("pairing completes and whitelist persists", (e) => e.method === "sendMessage" && String(e.params.text).includes("Paired!"), 20000, tp)
   if (readCfg().authorizedChatIds.includes(CHAT)) { passed++; say("  ✔ chat whitelisted") } else { failed++; say("  ✘ not whitelisted") }
+
+  // ── pairing code visible in terminal + CLI pair management ──
+  await sleep(400)
+  if (daemonOut.includes("RAVEN PAIRING CODE") && daemonOut.includes(pairing.code)) {
+    passed++
+    say("  ✔ pairing code banner printed to terminal")
+  } else {
+    failed++
+    say("  ✘ pairing banner missing from daemon stdout")
+  }
+  if (readCfg().chatNames?.[String(CHAT)]) { passed++; say("  ✔ paired chat name persisted") } else { failed++; say("  ✘ chatNames missing after pairing") }
+
+  const CLI = [path.join(REPO, "dist", "raven-cli.js")]
+  const cliEnv = { ...process.env, RAVEN_HOME: RAVEN }
+  const pairList = spawnSync("node", [...CLI, "pair"], { env: cliEnv, encoding: "utf8" })
+  if (pairList.status === 0 && pairList.stdout.includes(String(CHAT))) {
+    passed++
+    say("  ✔ `raven pair` lists paired chats")
+  } else {
+    failed++
+    say(`  ✘ raven pair output: ${pairList.stdout || pairList.stderr}`)
+  }
+
+  const cfgP = path.join(RAVEN, "raven.json")
+  const cfgJ = JSON.parse(fs.readFileSync(cfgP, "utf8"))
+  cfgJ.authorizedChatIds = [...(cfgJ.authorizedChatIds ?? []), 111]
+  cfgJ.chatNames = { ...(cfgJ.chatNames ?? {}), "111": "fake-user" }
+  fs.writeFileSync(cfgP, JSON.stringify(cfgJ, null, 2))
+  const tCli = Date.now() - 500
+  const rev = spawnSync("node", [...CLI, "pair", "revoke", "111"], { env: cliEnv, encoding: "utf8" })
+  const cfgNow = JSON.parse(fs.readFileSync(cfgP, "utf8"))
+  if (rev.status === 0 && !cfgNow.authorizedChatIds.includes(111) && !cfgNow.chatNames?.["111"]) {
+    passed++
+    say("  ✔ `raven pair revoke` removes chat + name from config")
+  } else {
+    failed++
+    say(`  ✘ revoke failed (status ${rev.status}): ${rev.stdout}${rev.stderr}`)
+  }
+  await expectLog(
+    "revoked chat gets a Telegram notice from the CLI",
+    (e) => e.method === "sendMessage" && e.params.chat_id === 111 && String(e.params.text).includes("unpaired from the terminal"),
+    20000,
+    tCli,
+  )
+
+  const tPairs = Date.now() - 500
+  await sendText("/pairs")
+  await expectLog(
+    "/pairs lists paired chats in Telegram",
+    (e) => e.method === "sendMessage" && String(e.params.text).includes("paired chats") && String(e.params.text).includes(String(CHAT)),
+    20000,
+    tPairs,
+  )
 
   let claudeLive = true
   if (REAL) {
