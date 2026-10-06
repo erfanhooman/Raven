@@ -1,6 +1,6 @@
 {
   "name": "@erfanhooman/raven",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Talk to your coding agents from Telegram: opencode, Claude Code, and Codex — one bot, live sessions, approvals, questions, and push notifications.",
   "type": "module",
   "license": "MIT",

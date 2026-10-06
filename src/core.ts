@@ -3792,12 +3792,32 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       }
     }
 
-    function macNotify(title: string, msg: string) {
+    // Best-effort desktop popup on every OS. Fire-and-forget: failures are
+    // silently ignored (headless machines, missing notifiers).
+    function desktopNotify(title: string, msg: string) {
       try {
-        if (process.platform !== "darwin") return
-        execFile("/usr/bin/osascript", ["-e", `display notification ${JSON.stringify(msg)} with title ${JSON.stringify(title)}`], () => {})
+        if (process.platform === "darwin") {
+          execFile("/usr/bin/osascript", ["-e", `display notification ${JSON.stringify(msg)} with title ${JSON.stringify(title)}`], () => {})
+          return
+        }
+        if (process.platform === "win32") {
+          const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;")
+          const xml = `<toast><visual><binding template="ToastGeneric"><text>${esc(title)}</text><text>${esc(msg)}</text></binding></visual></toast>`
+          const ps = [
+            `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null`,
+            `$doc = New-Object Windows.Data.Xml.Dom.XmlDocument`,
+            `$doc.LoadXml('${xml.replace(/'/g, "''")}')`,
+            `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Raven.Telegram.Bot').Show($doc)`,
+          ].join("; ")
+          execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { timeout: 10_000 }, () => {})
+          return
+        }
+        execFile("notify-send", [title, msg], { timeout: 10_000 }, () => {})
       } catch {}
     }
+
+    // Back-compat alias (darwin-only callers predate desktopNotify).
+    const macNotify = desktopNotify
 
     function shortNetError(e: any): string {
       const msg = String(e?.message ?? e)

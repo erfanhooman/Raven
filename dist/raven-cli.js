@@ -393,10 +393,27 @@ ${opts.join("\n")}
 \u2705 Q${i + 1}: ${chosen.join(", ")}`;
       });
       return clip(out);
-    }, macNotify2 = function(title, msg) {
+    }, desktopNotify2 = function(title, msg) {
       try {
-        if (process.platform !== "darwin") return;
-        execFile("/usr/bin/osascript", ["-e", `display notification ${JSON.stringify(msg)} with title ${JSON.stringify(title)}`], () => {
+        if (process.platform === "darwin") {
+          execFile("/usr/bin/osascript", ["-e", `display notification ${JSON.stringify(msg)} with title ${JSON.stringify(title)}`], () => {
+          });
+          return;
+        }
+        if (process.platform === "win32") {
+          const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+          const xml = `<toast><visual><binding template="ToastGeneric"><text>${esc(title)}</text><text>${esc(msg)}</text></binding></visual></toast>`;
+          const ps = [
+            `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null`,
+            `$doc = New-Object Windows.Data.Xml.Dom.XmlDocument`,
+            `$doc.LoadXml('${xml.replace(/'/g, "''")}')`,
+            `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Raven.Telegram.Bot').Show($doc)`
+          ].join("; ");
+          execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { timeout: 1e4 }, () => {
+          });
+          return;
+        }
+        execFile("notify-send", [title, msg], { timeout: 1e4 }, () => {
         });
       } catch {
       }
@@ -409,7 +426,7 @@ ${opts.join("\n")}
       if (/certificate|CERT|TLS|SSL/i.test(msg)) return "TLS/certificate error";
       return clip(msg, 140);
     };
-    var clientOf = clientOf2, clientName = clientName2, clientIcon = clientIcon2, noteInstanceResult = noteInstanceResult2, isInstanceUp = isInstanceUp2, scheduleWork = scheduleWork2, atomicWrite = atomicWrite2, saveState = saveState2, mutateState = mutateState2, kickDrain = kickDrain2, kickInbox = kickInbox2, watchDir = watchDir2, turnCardText = turnCardText2, buildQuestionKeyboard = buildQuestionKeyboard2, redactProxy = redactProxy2, readSock = readSock2, buildMultipart = buildMultipart2, makePairCode = makePairCode2, pairingHelp = pairingHelp2, formatStatus = formatStatus2, renderModelPage = renderModelPage2, permCardText = permCardText2, permCardKeyboard = permCardKeyboard2, questionCardText = questionCardText2, textPartsOf = textPartsOf2, buildTranscript = buildTranscript2, renderSelectionText = renderSelectionText2, macNotify = macNotify2, shortNetError = shortNetError2;
+    var clientOf = clientOf2, clientName = clientName2, clientIcon = clientIcon2, noteInstanceResult = noteInstanceResult2, isInstanceUp = isInstanceUp2, scheduleWork = scheduleWork2, atomicWrite = atomicWrite2, saveState = saveState2, mutateState = mutateState2, kickDrain = kickDrain2, kickInbox = kickInbox2, watchDir = watchDir2, turnCardText = turnCardText2, buildQuestionKeyboard = buildQuestionKeyboard2, redactProxy = redactProxy2, readSock = readSock2, buildMultipart = buildMultipart2, makePairCode = makePairCode2, pairingHelp = pairingHelp2, formatStatus = formatStatus2, renderModelPage = renderModelPage2, permCardText = permCardText2, permCardKeyboard = permCardKeyboard2, questionCardText = questionCardText2, textPartsOf = textPartsOf2, buildTranscript = buildTranscript2, renderSelectionText = renderSelectionText2, desktopNotify = desktopNotify2, shortNetError = shortNetError2;
     const CFG_ROOT = o.home;
     const CFG_FILE = path2.join(CFG_ROOT, "raven.json");
     const BR = CFG_ROOT;
@@ -1578,7 +1595,7 @@ Connection: close\r
         console.log(`[raven] ${msg}`);
       } catch {
       }
-      macNotify2("Raven \u2014 pairing", `Code ${req.code} \u2014 send /pair ${req.code} to the bot`);
+      macNotify("Raven \u2014 pairing", `Code ${req.code} \u2014 send /pair ${req.code} to the bot`);
       log("info", msg);
     }
     async function askOwnersToApprove(cfg, req) {
@@ -3509,19 +3526,20 @@ ${out || "(done)"}`, 3900));
         }
       }
     }
+    const macNotify = desktopNotify2;
     async function setLinkOnline(detail) {
       await mutateState2((s) => {
         s.link = { status: "online", since: Date.now(), lastError: "", fails: 0 };
       });
       log("info", `Telegram reconnected (${detail})`);
-      macNotify2("Raven", "Telegram reconnected \u2705");
+      macNotify("Raven", "Telegram reconnected \u2705");
     }
     async function setLinkOffline(errText) {
       await mutateState2((s) => {
         s.link = { status: "offline", since: Date.now(), lastError: errText, fails: (s.link?.fails ?? 0) + 1 };
       });
       log("error", `Telegram unreachable: ${errText} \u2014 check network/VPN/proxy ("proxy" in ${CFG_FILE}); retrying automatically`);
-      macNotify2("Raven", `Telegram unreachable: ${errText}`);
+      macNotify("Raven", `Telegram unreachable: ${errText}`);
     }
     async function tgLoop() {
       if (tgRunning || disposed) return;
