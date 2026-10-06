@@ -587,7 +587,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
         // already holds the lock, so only one winner exists. A recursive
         // mkdir would silently succeed for everyone.
         await fsp.mkdir(LOCK)
-        await fsp.writeFile(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: Date.now() }), "utf8")
+        await fsp.writeFile(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: Date.now(), client: CLIENT }), "utf8")
         log("info", "acquired leadership")
         return true
       } catch {
@@ -602,7 +602,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
         const now = Date.now()
         if (o?.key === KEY) {
           firstLockSeen = 0
-          await atomicWrite(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: now }))
+          await atomicWrite(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: now, client: CLIENT }))
           await drainOutbox()
           if (!tgRunning) void tgLoop()
           const servers = new Set<string>()

@@ -26,6 +26,13 @@ cd Raven
 
 Flags for both: `--token <bot token>`, `--proxy <http://…|socks5://…>`, `--no-service`, `-y`.
 
+## How Raven runs
+
+- **opencode** — a plugin loads inside OpenCode; nothing else to run.
+- **Claude Code & Codex** — driven by the **Raven daemon**. `raven setup` installs it as a background service on every OS (macOS launchd · Windows logon · Linux systemd user), or run `raven run` yourself. If the daemon isn't running, Claude/Codex won't respond in Telegram (opencode still will). Check with `raven service status`.
+
+Both are CLI integrations — Raven drives the `claude` and `codex` CLIs directly (codex ≥ 0.160; a VS Code extension's bundled codex CLI binary is detected as a fallback). No GUI app integration.
+
 ## Pairing
 
 1. Restart OpenCode Desktop (or run `raven run`).
@@ -43,10 +50,10 @@ Flags for both: `--token <bot token>`, `--proxy <http://…|socks5://…>`, `--n
 | OS | Status |
 | -- | ------ |
 | macOS | Full — launchd service (`raven service`), notifications |
-| Linux | Full — run `raven run` under systemd/pm2 |
-| Windows | Supported — config in `%APPDATA%\raven`, keep `raven run` alive (e.g. Task Scheduler) |
+| Linux | Full — systemd user service, notifications |
+| Windows | Supported — logon autostart (hidden), notifications; config in `%APPDATA%\raven` |
 
-`raven setup` detects the platform and skips launchd where it doesn't apply.
+`raven setup` detects the platform and installs the matching background service (`--no-service` to skip).
 
 ## Features
 
@@ -80,7 +87,7 @@ raven pair                   pending code + paired chats
 raven pair revoke <chatId>   unpair a chat (notifies it on Telegram)
 raven status                 paired chats, leader, link health, binaries
 raven logs [-f]              tail the bridge log (all platforms)
-raven service install|remove|status   (macOS launchd only)
+raven service install|remove|status   (launchd / Windows logon / systemd)
 raven uninstall [--purge]
 ```
 
@@ -125,6 +132,7 @@ Config: `~/.config/raven/raven.json` (`%APPDATA%\raven` on Windows).
 npm install
 npm run build        # esbuild → dist/ (~200 KB, zero runtime deps)
 npm run typecheck
+npm run test:platform  # service command builders (win/linux, no OS touched)
 npm run test:agents  # self-contained driver suite (no agents needed)
 npm test             # opencode suite (requires `opencode` installed)
 ```

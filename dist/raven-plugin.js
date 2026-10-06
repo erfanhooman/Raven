@@ -618,7 +618,7 @@ ${opts.join("\n")}
       try {
         await fsp.mkdir(BR, { recursive: true });
         await fsp.mkdir(LOCK);
-        await fsp.writeFile(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: Date.now() }), "utf8");
+        await fsp.writeFile(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: Date.now(), client: CLIENT }), "utf8");
         log("info", "acquired leadership");
         return true;
       } catch {
@@ -632,7 +632,7 @@ ${opts.join("\n")}
         const now = Date.now();
         if (o2?.key === KEY) {
           firstLockSeen = 0;
-          await atomicWrite2(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: now }));
+          await atomicWrite2(OWNER, JSON.stringify({ key: KEY, pid: process.pid, hb: now, client: CLIENT }));
           await drainOutbox();
           if (!tgRunning) void tgLoop();
           const servers = /* @__PURE__ */ new Set();

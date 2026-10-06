@@ -1,6 +1,6 @@
 {
   "name": "@erfanhooman/raven",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Talk to your coding agents from Telegram: opencode, Claude Code, and Codex — one bot, live sessions, approvals, questions, and push notifications.",
   "type": "module",
   "license": "MIT",
@@ -36,6 +36,7 @@
     "mock": "node test/mock-telegram.mjs",
     "test": "npm run build && node test/e2e-opencode.mjs",
     "test:agents": "npm run build && node test/e2e-agents.mjs",
+    "test:platform": "node test/platform-service.mjs",
     "smoke:agents": "npm run build && node test/e2e-agents.mjs --real"
   },
   "devDependencies": {

@@ -67,3 +67,34 @@ export function pairingBanner(code: string, who?: string, ttlMin = 10): string {
 export function pairedChatLine(id: number, name?: string): string {
   return name ? `  • ${id} — "${name}"` : `  • ${id}`
 }
+
+// ── cross-platform background-service building blocks ──
+
+// PowerShell single-quoted literal (doubled inner quotes).
+export function psQuote(s: string): string {
+  return `'${String(s).replace(/'/g, "''")}'`
+}
+
+// HKCU\...\Run value data: starts the daemon hidden at Windows logon.
+export function winRunValue(node: string, script: string): string {
+  return `powershell.exe -NoProfile -WindowStyle Hidden -Command "& ${psQuote(node)} ${psQuote(script)} run"`
+}
+
+// systemd user unit content for the daemon.
+export function systemdUnit(node: string, script: string, ravenHomeEnv?: string): string {
+  const env = ravenHomeEnv ? `Environment=${psQuote(`RAVEN_HOME=${ravenHomeEnv}`)}\n` : ""
+  return [
+    "[Unit]",
+    "Description=Raven Telegram bridge daemon",
+    "After=network-online.target",
+    "",
+    "[Service]",
+    `ExecStart=${psQuote(node)} ${psQuote(script)} run`,
+    `${env}Restart=on-failure`,
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n")
+}

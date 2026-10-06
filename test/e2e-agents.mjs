@@ -105,6 +105,11 @@ async function main() {
   say("  ✔ daemon is leader + polling")
   passed++
 
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(RAVEN, "leader.lock", "owner.json"), "utf8"))
+    if (owner.client === "daemon") { passed++; say("  ✔ leader.lock records client=daemon") } else { failed++; say(`  ✘ leader.lock client: ${owner.client}`) }
+  } catch (e) { failed++; say(`  ✘ leader.lock unreadable: ${e.message}`) }
+
   // ── pairing ──
   const tp = Date.now() - 500
   await sendText("/start")

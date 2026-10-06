@@ -8,7 +8,7 @@ import os from "node:os"
 import { createInterface } from "node:readline"
 import { execFileSync, spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { ravenHome, pairingBanner, pairedChatLine } from "./util.js"
+import { ravenHome, pairingBanner, pairedChatLine, psQuote, winRunValue, systemdUnit } from "./util.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -164,19 +164,15 @@ async function cmdSetup(args: string[]) {
     } catch {}
   }
 
-  // Background service (auto-start the daemon with the machine).
-  // macOS uses launchd; other platforms should run `raven run` under a
-  // supervisor instead (systemd unit, Task Scheduler, pm2, …).
+  // Background service: auto-start the daemon with the machine, on every OS
+  // (launchd / Windows logon / systemd user unit). Claude Code and Codex only
+  // work while this daemon runs — opencode doesn't need it (plugin).
   if (!noService) {
-    if (process.platform !== "darwin") {
-      console.log("background service is macOS (launchd) only — skipped.")
-      console.log("run `raven run` under your supervisor to keep the daemon alive (see README).")
-    } else {
-      try {
-        await installService()
-      } catch (e: any) {
-        console.log(`service install skipped: ${e?.message ?? e}`)
-      }
+    try {
+      await installService()
+    } catch (e: any) {
+      console.log(`service install skipped: ${e?.message ?? e}`)
+      console.log("run `raven run` in the background to keep the daemon alive (see README).")
     }
   }
 
@@ -192,7 +188,8 @@ async function cmdSetup(args: string[]) {
 
   console.log("")
   console.log("Next steps:")
-  console.log("  1. Restart OpenCode Desktop (or run `raven run` to start the daemon now).")
+  console.log("  1. Restart OpenCode Desktop if you use opencode (plugins load at startup).")
+  console.log("     Claude Code + Codex run through the background service — check `raven service status`.")
   console.log("  2. Open your bot in Telegram and send /start.")
   console.log("  3. A big pairing-code banner prints in the terminal of the running daemon (plus a desktop notification).")
   console.log(`  4. Reply to the bot with: /pair THECODE — that links this chat. Anyone unpaired can never read your sessions.`)
@@ -214,14 +211,82 @@ function plistPath(): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", "dev.raven.daemon.plist")
 }
 
-function binPath(): string {
-  const p = process.env.RAVEN_BIN || process.execPath
-  const script = process.env.RAVEN_CLI_ENTRY || path.join(HERE, "raven-cli.js")
-  return `${p} ${script} run`
+const WIN_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+function ravenCmdParts(): [string, string] {
+  return [process.env.RAVEN_BIN || process.execPath, process.env.RAVEN_CLI_ENTRY || path.join(HERE, "raven-cli.js")]
+}
+
+function systemdUnitPath(): string {
+  const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
+  return path.join(xdg, "systemd", "user", "raven.service")
+}
+
+// Pid of a live raven daemon recorded in leader.lock — used so installing or
+// starting the service doesn't spawn a duplicate. owner.json's `client` field
+// is written by current versions; an opencode plugin leader has client "oc",
+// so the daemon is still started for it (that's exactly when Claude/Codex
+// need it).
+function liveDaemonPid(): number | null {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(ravenHome(), "leader.lock", "owner.json"), "utf8"))
+    if (o?.client !== "daemon") return null
+    if (Date.now() - Number(o?.hb ?? 0) > 30_000) return null
+    const pid = Number(o?.pid)
+    if (!Number.isFinite(pid) || pid <= 0) return null
+    try {
+      process.kill(pid, 0)
+    } catch (e: any) {
+      if (e?.code === "EPERM") return pid // alive, just not ours
+      return null
+    }
+    return pid
+  } catch {
+    return null
+  }
 }
 
 async function installService(): Promise<void> {
-  const [head, ...tail] = [process.env.RAVEN_BIN || process.execPath, process.env.RAVEN_CLI_ENTRY || path.join(HERE, "raven-cli.js"), "run"]
+  const [node, script] = ravenCmdParts()
+
+  // Windows: HKCU Run key → daemon starts hidden at every logon.
+  if (process.platform === "win32") {
+    execFileSync("reg", ["add", WIN_RUN_KEY, "/v", "Raven", "/t", "REG_SZ", "/d", winRunValue(node, script), "/f"], { stdio: "ignore" })
+    console.log(`logon autostart installed (HKCU Run → Raven)`)
+    if (liveDaemonPid()) {
+      console.log("daemon already running")
+    } else {
+      spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", `& ${psQuote(node)} ${psQuote(script)} run`], { detached: true, stdio: "ignore" }).unref()
+      console.log("daemon started (hidden)")
+    }
+    return
+  }
+
+  // Linux: systemd user unit.
+  if (process.platform === "linux") {
+    const unit = systemdUnitPath()
+    await fsp.mkdir(path.dirname(unit), { recursive: true })
+    await fsp.writeFile(unit, systemdUnit(node, script, process.env.RAVEN_HOME || undefined))
+    let ok = false
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" })
+      execFileSync("systemctl", ["--user", "enable", "--now", "raven.service"], { stdio: "inherit" })
+      ok = true
+    } catch {}
+    if (ok) {
+      try {
+        execFileSync("loginctl", ["enable-linger", os.userInfo().username], { stdio: "ignore" })
+      } catch {}
+      console.log(`systemd user service installed → ${unit}`)
+    } else {
+      console.log(`unit written → ${unit}`)
+      console.log("systemctl --user unavailable here — enable it later with: systemctl --user enable --now raven.service")
+    }
+    return
+  }
+
+  // macOS: launchd agent.
+  const [head, ...tail] = [node, script, "run"]
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -255,6 +320,79 @@ ${tail.map((t) => `    <string>${t}</string>`).join("\n")}
     execFileSync("launchctl", ["bootstrap", domain, plistPath()], { stdio: "inherit" });
   }
   console.log(`launchd service installed → ${plistPath()}`)
+}
+
+async function removeService(): Promise<void> {
+  if (process.platform === "win32") {
+    let removed = false
+    try {
+      execFileSync("reg", ["delete", WIN_RUN_KEY, "/v", "Raven", "/f"], { stdio: "ignore" })
+      removed = true
+    } catch {}
+    const pid = liveDaemonPid()
+    if (pid) {
+      try {
+        execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" })
+      } catch {}
+      console.log(`logon autostart removed; daemon (pid ${pid}) stopped`)
+    } else {
+      console.log(removed ? "logon autostart removed" : "no Windows autostart installed")
+    }
+    return
+  }
+  if (process.platform === "linux") {
+    try {
+      execFileSync("systemctl", ["--user", "disable", "--now", "raven.service"], { stdio: "ignore" })
+    } catch {}
+    try {
+      await fsp.rm(systemdUnitPath(), { force: true })
+    } catch {}
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" })
+    } catch {}
+    console.log("systemd user service removed")
+    return
+  }
+  try {
+    execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" })
+  } catch {}
+  try {
+    await fsp.rm(plistPath(), { force: true })
+  } catch {}
+  console.log("service removed")
+}
+
+async function serviceStatus(): Promise<void> {
+  if (process.platform === "win32") {
+    let installed = false
+    try {
+      console.log(execFileSync("reg", ["query", WIN_RUN_KEY, "/v", "Raven"], { encoding: "utf8" }).trim())
+      installed = true
+    } catch {}
+    if (!installed) console.log("logon autostart not installed")
+    const pid = liveDaemonPid()
+    console.log(pid ? `daemon running (pid ${pid})` : "daemon not running")
+    return
+  }
+  if (process.platform === "linux") {
+    const pick = (args: string[]): string => {
+      try {
+        return execFileSync("systemctl", args, { encoding: "utf8" }).trim()
+      } catch (e: any) {
+        return String(e?.stdout ?? "").trim() || "unknown"
+      }
+    }
+    console.log("service  :", pick(["--user", "is-enabled", "raven.service"]))
+    console.log("active   :", pick(["--user", "is-active", "raven.service"]))
+    const pid = liveDaemonPid()
+    if (pid) console.log("daemon   : running (pid " + pid + ")")
+    return
+  }
+  try {
+    console.log(execFileSync("launchctl", ["print", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { encoding: "utf8" }))
+  } catch {
+    console.log("service not installed")
+  }
 }
 
 async function cmdRun(): Promise<void> {
@@ -416,22 +554,10 @@ async function cmdLogs(follow: boolean): Promise<void> {
   process.on("SIGTERM", stop)
 }
 
-function launchdGuard(): boolean {
-  if (process.platform === "darwin") return true
-  console.log("the background service is macOS (launchd) only — run `raven run` under your supervisor instead.")
-  return false
-}
-
 async function cmdUninstall(purge: boolean): Promise<void> {
-  if (process.platform === "darwin") {
-    try {
-      execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" })
-    } catch {}
-    try {
-      await fsp.rm(plistPath(), { force: true })
-    } catch {}
-    console.log("removed service")
-  }
+  try {
+    await removeService()
+  } catch {}
   await fsp.rm(pluginPath(), { force: true })
   for (const l of legacyPluginPaths()) await fsp.rm(l, { force: true })
   console.log("removed plugin")
@@ -453,23 +579,20 @@ async function main() {
       await cmdRun()
       break
     case "service":
-      if (!launchdGuard()) break
       if (rest[0] === "remove") {
         try {
-          execFileSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { stdio: "ignore" })
-          await fsp.rm(plistPath(), { force: true })
-          console.log("service removed")
+          await removeService()
         } catch (e: any) {
           console.error("remove failed:", e?.message ?? e)
         }
       } else if (rest[0] === "status") {
-        try {
-          console.log(execFileSync("launchctl", ["print", `gui/${process.getuid?.() ?? 501}/dev.raven.daemon`], { encoding: "utf8" }))
-        } catch {
-          console.log("service not installed")
-        }
+        await serviceStatus()
       } else {
-        await installService()
+        try {
+          await installService()
+        } catch (e: any) {
+          console.error("service install failed:", e?.message ?? e)
+        }
       }
       break
     case "pair": {
@@ -518,9 +641,9 @@ async function main() {
           "raven — Telegram bridge for opencode · Claude Code · Codex",
           "",
           "usage:",
-          "  raven setup            wizard: token, config, plugin, background service (macOS)",
+          "  raven setup            wizard: token, config, plugin, background service",
           "  raven run              run the daemon in the foreground",
-          "  raven service install|remove|status   (macOS launchd only)",
+          "  raven service install|remove|status   (launchd / Windows logon / systemd)",
           "  raven pair             pending pairing code + list of paired chats",
           "  raven pair revoke <chatId>   unpair a chat (also clears its pending code, notifies it)",
           "  raven status           what's paired, who's leader, where logs live",
