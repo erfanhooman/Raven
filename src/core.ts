@@ -1650,13 +1650,16 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       return out
     }
 
-    function pairingHelp(code: string): string {
+    // The pairing code is NEVER sent over Telegram — not even to the chat
+    // that requested it. Anyone who can read the code on this computer is
+    // authorized to pair; anyone who only sees Telegram is not.
+    function pairingHelp(): string {
       return [
         `🔐 Raven isn't paired with this Telegram account yet.`,
         ``,
-        `On your computer, Raven shows this code:  ${code}`,
-        `Send it back here with:  /pair ${code}`,
-        `(expires in 10 minutes)`,
+        `A one-time code was just shown ON YOUR COMPUTER (terminal + desktop notification; re-read it anytime with \`raven pair\`).`,
+        `Send it here as:  /pair CODE`,
+        `(expires in 10 minutes — the code never appears here in Telegram)`,
       ].join("\n")
     }
 
@@ -1670,7 +1673,7 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
     }
 
     async function askOwnersToApprove(cfg: any, req: PairingReq): Promise<void> {
-      const text = `🔐 Pairing request: "${req.name}" (chat ${req.chatId})\nTheir code: ${req.code}\nApprove this account?`
+      const text = `🔐 Pairing request: "${req.name}" (chat ${req.chatId})\nApprove this account? (they must still enter the code shown on this computer)`
       const kb = {
         inline_keyboard: [
           [{ text: "✅ Approve", callback_data: `s:ap:ok:${req.chatId}` }, { text: "❌ Deny", callback_data: `s:ap:no:${req.chatId}` }],
@@ -1729,14 +1732,14 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
     async function pairRequest(cfg: any, chatId: number, name: string): Promise<void> {
       const prev = (await loadState()).pairing
       if (prev && prev.chatId === chatId && Date.now() - prev.createdAt < PAIR_TTL_MS && prev.attempts < PAIR_MAX_ATTEMPTS) {
-        await tgSend(cfg, chatId, pairingHelp(prev.code))
+        await tgSend(cfg, chatId, pairingHelp())
         return
       }
       const req: PairingReq = { code: makePairCode(), chatId, name, createdAt: Date.now(), attempts: 0, ownerApproved: false }
       await mutateState((s) => void (s.pairing = req))
       await announcePairing(req)
       if (cfg.ownerApprove) await askOwnersToApprove(cfg, req)
-      await tgSend(cfg, chatId, pairingHelp(req.code))
+      await tgSend(cfg, chatId, pairingHelp())
     }
 
     async function tryPairCode(cfg: any, chatId: number, text: string): Promise<boolean> {
@@ -1796,8 +1799,8 @@ export async function startBridge(o: BridgeOpts): Promise<BridgeHandle> {
       await mutateState((s) => {
         if (s.pairing && s.pairing.chatId === targetChat) s.pairing.ownerApproved = true
       })
-      await tgSend(cfg, fromChat, `✅ Approved. Ask them to send /pair ${req.code} now.`)
-      await tgSend(cfg, targetChat, `✅ Approved by the owner! Send /pair ${req.code} to finish.`).catch(() => {})
+      await tgSend(cfg, fromChat, `✅ Approved. They can now send /pair with the code shown on this computer.`)
+      await tgSend(cfg, targetChat, `✅ Approved by the owner! Now send /pair with the code shown on the computer.`).catch(() => {})
     }
 
     async function handleUpdate(u: any) {

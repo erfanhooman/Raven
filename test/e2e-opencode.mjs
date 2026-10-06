@@ -367,7 +367,7 @@ async function main() {
   say(`${mark} TEST 1: pairing — unpaired chats are refused; code pairs`)
   const t1 = Date.now() - 500
   await sendText("/start")
-  await expectLog(
+  const helpMsg = await expectLog(
     "unpaired /start gets pairing instructions",
     (e) => e.method === "sendMessage" && String(e.params.text).includes("isn't paired") && String(e.params.text).includes("/pair"),
     20000,
@@ -380,6 +380,14 @@ async function main() {
   } else {
     failed++
     say(`  ✘ bad pairing code: ${JSON.stringify(pairReq1)}`)
+  }
+  if (pairReq1 && !String(helpMsg.params.text).includes(pairReq1.code)) {
+    passed++
+    say("  ✔ pairing code never sent over Telegram (computer-only)")
+  } else {
+    failed++
+    say("  ✘ pairing code leaked into the Telegram pairing message")
+    throw new Error("pairing code leak")
   }
   const t1w = Date.now() - 500
   await sendText("/pair XXXXXX")

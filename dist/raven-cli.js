@@ -305,13 +305,13 @@ Content-Type: ${file.contentType}\r
       let out = "";
       for (let i = 0; i < 6; i++) out += PAIR_ALPHABET[Math.floor(Math.random() * PAIR_ALPHABET.length)];
       return out;
-    }, pairingHelp2 = function(code) {
+    }, pairingHelp2 = function() {
       return [
         `\u{1F510} Raven isn't paired with this Telegram account yet.`,
         ``,
-        `On your computer, Raven shows this code:  ${code}`,
-        `Send it back here with:  /pair ${code}`,
-        `(expires in 10 minutes)`
+        `A one-time code was just shown ON YOUR COMPUTER (terminal + desktop notification; re-read it anytime with \`raven pair\`).`,
+        `Send it here as:  /pair CODE`,
+        `(expires in 10 minutes \u2014 the code never appears here in Telegram)`
       ].join("\n");
     }, formatStatus2 = function(busy) {
       return busy ? "\u23F3 busy" : "\u2705 idle";
@@ -1583,8 +1583,7 @@ Connection: close\r
     }
     async function askOwnersToApprove(cfg, req) {
       const text = `\u{1F510} Pairing request: "${req.name}" (chat ${req.chatId})
-Their code: ${req.code}
-Approve this account?`;
+Approve this account? (they must still enter the code shown on this computer)`;
       const kb = {
         inline_keyboard: [
           [{ text: "\u2705 Approve", callback_data: `s:ap:ok:${req.chatId}` }, { text: "\u274C Deny", callback_data: `s:ap:no:${req.chatId}` }]
@@ -1643,14 +1642,14 @@ Approve this account?`;
     async function pairRequest(cfg, chatId, name) {
       const prev = (await loadState()).pairing;
       if (prev && prev.chatId === chatId && Date.now() - prev.createdAt < PAIR_TTL_MS && prev.attempts < PAIR_MAX_ATTEMPTS) {
-        await tgSend(cfg, chatId, pairingHelp2(prev.code));
+        await tgSend(cfg, chatId, pairingHelp2());
         return;
       }
       const req = { code: makePairCode2(), chatId, name, createdAt: Date.now(), attempts: 0, ownerApproved: false };
       await mutateState2((s) => void (s.pairing = req));
       await announcePairing(req);
       if (cfg.ownerApprove) await askOwnersToApprove(cfg, req);
-      await tgSend(cfg, chatId, pairingHelp2(req.code));
+      await tgSend(cfg, chatId, pairingHelp2());
     }
     async function tryPairCode(cfg, chatId, text) {
       const t = text.trim();
@@ -1710,8 +1709,8 @@ Approve this account?`;
       await mutateState2((s) => {
         if (s.pairing && s.pairing.chatId === targetChat) s.pairing.ownerApproved = true;
       });
-      await tgSend(cfg, fromChat, `\u2705 Approved. Ask them to send /pair ${req.code} now.`);
-      await tgSend(cfg, targetChat, `\u2705 Approved by the owner! Send /pair ${req.code} to finish.`).catch(() => {
+      await tgSend(cfg, fromChat, `\u2705 Approved. They can now send /pair with the code shown on this computer.`);
+      await tgSend(cfg, targetChat, `\u2705 Approved by the owner! Now send /pair with the code shown on the computer.`).catch(() => {
       });
     }
     async function handleUpdate(u) {
