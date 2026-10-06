@@ -1,78 +1,22 @@
 # Raven
 
-> Control your coding agents from Telegram. One bot for [opencode](https://opencode.ai), [Claude Code](https://docs.claude.com/en/docs/claude-code), and [Codex CLI](https://developers.openai.com/codex) — chat with live sessions, approve permissions, and get notified when work finishes.
+> Control your coding agents from Telegram — [opencode](https://opencode.ai), [Claude Code](https://docs.claude.com/en/docs/claude-code), and [Codex CLI](https://developers.openai.com/codex) in one bot.
 
 [![npm version](https://img.shields.io/npm/v/@erfanhooman/raven)](https://www.npmjs.com/package/@erfanhooman/raven)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-green)](https://nodejs.org)
 [![Platform: macOS | Linux | Windows](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://github.com/erfanhooman/Raven)
 
-## Table of Contents
+## Install
 
-- [About](#about)
-- [Getting Started](#getting-started)
-- [Features](#features)
-- [How It Works](#how-it-works)
-- [Usage](#usage)
-- [Security](#security)
-- [Configuration](#configuration)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-- [Uninstall](#uninstall)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
-
-## About
-
-Coding agents do their best work when they can run long tasks unattended — but that creates a practical problem: you leave your desk and lose visibility. Did the run finish? Is it stuck on a permission prompt? Did the API call fail and retry? Checking requires a remote desktop, SSH session, or open port.
-
-Raven solves this with a Telegram bot that runs on your own machine and talks to the agents you already use. There is no hosted intermediary, no VPN, and no inbound ports. Your Mac makes outbound HTTPS calls to the Telegram Bot API; your phone just talks to Telegram.
-
-What Raven connects:
-
-- **opencode** — via a plugin (`~/.config/opencode/plugins/raven.js`) that loads into opencode / OpenCode Desktop.
-- **Claude Code and Codex** — via a background daemon (`dev.raven.daemon`) that drives the real `claude` and `codex` CLIs, so these work even when OpenCode is closed.
-
-### The problem it solves
-
-1. **Missed turn completions** — long builds, refactors, and research tasks finish while you are away.
-2. **Blocked permission prompts** — the agent waits for `Allow / Deny` on file edits, shell commands, or patches and cannot proceed.
-3. **Unanswered clarifying questions** — opencode asks which option you want and stalls without input.
-4. **No lightweight remote control** — alternatives require exposing your machine to the network.
-
-Raven delivers turn notifications, live streaming cards, one-tap permission approvals, question answering, model and mode switching, and session management — all from Telegram.
-
-## Getting Started
-
-> New here? Start here. Install Raven in about 2 minutes, then pair your Telegram account.
-
-### Prerequisites
-
-- Node.js >= 18 — check with `node --version`
-- At least one agent client installed: opencode, Claude Code (`claude`), or Codex CLI (`codex`)
-- A Telegram bot token — create one in about a minute via [@BotFather](https://t.me/BotFather) with `/newbot`
-
-### Platform support
-
-| OS | Status | Notes |
-| -- | ------ | ----- |
-| macOS | Full | Verified. Background service via launchd (`raven service`), desktop notifications, VS Code extension binary detection. |
-| Linux | Full | Verified in a `node:18` container (`status`, binary lookup via `PATH`, log reading). Run `raven run` under systemd/pm2 — `raven service` is macOS-only. |
-| Windows | Supported | Config lives in `%APPDATA%\raven`; `claude`/`codex` are found via `PATH` (including `claude.cmd` shims) and the VS Code extension bundle. No auto-start service yet — keep `raven run` alive with Task Scheduler and pass `--no-service` to setup. |
-
-`raven setup` detects the platform automatically: on Linux and Windows it skips the launchd step and tells you how to keep the daemon running instead.
-
-### Installation
-
-#### Option A — npm (recommended)
+Requires Node >= 18, at least one agent client (opencode, `claude`, or `codex`), and a bot token from [@BotFather](https://t.me/BotFather).
 
 ```bash
 npm install -g @erfanhooman/raven
 raven setup
 ```
 
-#### Option B — from source
+Or from source:
 
 ```bash
 git clone https://github.com/erfanhooman/Raven.git
@@ -80,133 +24,75 @@ cd Raven
 ./install.sh
 ```
 
-Both `raven setup` and `./install.sh` accept:
+Flags for both: `--token <bot token>`, `--proxy <http://…|socks5://…>`, `--no-service`, `-y`.
 
-- `--token <bot token>`
-- `--proxy <http://… or socks5://…>`
-- `--no-service` (skip the launchd service)
-- `-y` (non-interactive)
+## Pairing
 
-### What setup does
+1. Restart OpenCode Desktop (or run `raven run`).
+2. In Telegram send `/start` to your bot.
+3. A pairing-code banner appears in the terminal, plus a desktop notification. Re-read anytime: `raven pair`.
+4. Send `/pair CODE` to the bot.
 
-1. Prompts for the bot token (hidden input) and validates it with Telegram `getMe`.
-2. Writes `~/.config/raven/raven.json` with mode `0600`. Migrates a legacy `telegram-bridge.json` config if present.
-3. Installs the opencode plugin to `~/.config/opencode/plugins/raven.js` and removes legacy `telegram-bridge.*` plugins.
-4. Installs a background service so the daemon starts at login and serves Claude Code + Codex even while OpenCode is closed. macOS uses a launchd agent (`dev.raven.daemon`); on Linux/Windows setup skips this step — run `raven run` under systemd, Task Scheduler, or pm2 instead (or pass `--no-service`).
-5. Prints pairing instructions.
+| Action | Terminal | Telegram |
+| ------ | -------- | -------- |
+| Show code + paired chats | `raven pair` | `/pairs` |
+| Revoke a chat | `raven pair revoke <chatId>` | `/unpair <chatId>` |
 
-### Pairing your Telegram account
+## Platform support
 
-1. Restart OpenCode Desktop (plugins load at startup), or run `raven run` in a terminal.
-2. Open your bot in Telegram and send `/start`.
-3. Raven prints a big 6-character one-time code banner in the terminal of the running daemon (plus a desktop notification on macOS/Windows/Linux). You can re-display it anytime with `raven pair` — that command also lists all paired chats.
-4. Send `/pair CODE` to the bot. The Home screen appears and your chat ID is whitelisted.
+| OS | Status |
+| -- | ------ |
+| macOS | Full — launchd service (`raven service`), notifications |
+| Linux | Full — run `raven run` under systemd/pm2 |
+| Windows | Supported — config in `%APPDATA%\raven`, keep `raven run` alive (e.g. Task Scheduler) |
 
-To add another device or account, repeat the steps from that chat. To see who's paired, use `raven pair` in a terminal or `/pairs` in Telegram. To revoke access: `raven pair revoke <chatId>` from a terminal (the removed chat gets a Telegram notice), or `/unpair` (self) / `/unpair <chatId>` from any paired chat. Both sides stay in sync — the config file is the single source of truth.
+`raven setup` detects the platform and skips launchd where it doesn't apply.
 
 ## Features
 
-| Area | What you can do |
-| ---- | --------------- |
-| Chat with sessions | Send plain text to your focused session; open conversation history, download transcripts (opencode), and revert (opencode) |
-| Turn notifications | Get a fresh `✅ finished` message (with the assistant's reply) so your phone pings, plus the live card updated in place |
-| Live streaming | Watch a single live card update in place with the tail of the answer as it streams; no reasoning or tool noise |
-| Permission approvals | Approve tool use from your lock screen with **Allow / Always / Reject**; the agent waits for your decision |
-| Question answering | Answer opencode questions with single-tap or multi-select buttons + Submit |
-| Stop control | Interrupt a long turn with Stop on the live card, workspace, or Home |
-| Session management | Browse sessions grouped by project and client, create new sessions, switch focus |
-| Model picker | Pick from the real model list per client; custom model IDs supported for gateways |
-| Build / plan modes | Toggle build and plan modes for opencode and Claude Code (hidden for Codex, which has no plan mode) |
-| Agent workspaces | Open a dedicated session for an opencode agent with `/agent`; all input routes there until `/agent close` |
-| Multi-client | opencode (`🖥`), Claude Code (`🧩`), and Codex (`⬢`) in one Home screen |
-| Notifications control | Toggle idle, error, permission, question, and session events in Settings |
-| Proxy support | Run behind HTTP/SOCKS proxies where Telegram is filtered |
+- One Home screen for opencode, Claude Code, and Codex sessions
+- `✅ finished` notifications, live streaming cards, one-tap permission approvals
+- Answer questions, stop turns, browse/create sessions
+- Model picker and build/plan mode per session (Codex has no plan mode)
+- Agent workspaces (`/agent`), notification toggles, HTTP/SOCKS proxy support
 
-## How It Works
-
-```text
-Your phone (Telegram) ──outbound HTTPS──► Telegram Bot API
-                                               ▲
-                                      getUpdates long-poll
-                                      (leader election)
-                                               │
-                                    ┌──────────┴───────────┐
-                                    │   Raven on your Mac  │
-                                    │  ├─ opencode plugin │  runs inside opencode / OpenCode Desktop
-                                    │  └─ raven daemon    │  Claude Code + Codex (launchd, auto-start)
-                                    └──────────────────────┘
-```
-
-- Only one process polls Telegram at a time. Leadership is coordinated through `~/.config/raven/leader.lock`, so you can run OpenCode Desktop and `raven run` simultaneously without duplicate polling.
-- The Home screen and every other screen edit a single control-panel message in place to avoid chat spam.
-- Model and mode selections are pins: they survive the app's state sync, are sent with your next message, and un-pin once the client adopts them.
-
-## Usage
-
-### Telegram commands
+## Telegram commands
 
 | Command | Description |
 | ------- | ----------- |
-| `/start` | Home — focused session, model, build/plan mode, git branch, connection status |
-| `/sessions` | Browse sessions grouped by project and client |
-| `/new [title]` | Create a new session |
-| `/agent [name \| close]` | Open a dedicated opencode agent workspace, or close it |
+| `/start` | Home — session, model, mode, connection status |
+| `/sessions` | Browse sessions by project and client |
+| `/new [title]` | Create a session |
+| `/agent [name \| close]` | Open/close an opencode agent workspace |
 | `/inbox` | Pending permissions and questions |
-| `/settings` | Notifications, agent workspace model, model defaults |
-| `/abort` | Stop the focused turn |
-| `/skip` | Answer a pending question with "none" |
-| `/word args` | Any other `/command` runs the matching opencode command |
-| Plain text | Sends a message to the focused session (or open agent workspace) |
+| `/settings` | Notifications and profile |
+| `/pairs` · `/unpair <id>` | List / revoke paired chats |
+| `/abort` · `/skip` | Stop the turn · answer with "none" |
+| `/word args` | Runs the matching opencode command |
+| Plain text | Sends a message to the focused session |
 
-Model changes made in the desktop app are reflected in Telegram. If you pinned a different model in Telegram, use `Follow the app's model` in the picker to release the pin.
-
-### Claude Code notes
-
-Create a `New Claude Code session` from the bot. Sessions are stored under `~/.claude/projects`, so you can later resume them locally with `claude --resume <id>`.
-
-Models accept alias names (`sonnet`, `opus`, `haiku`, `default`) or any exact model ID as free text, which also works behind custom gateways.
-
-Limitation: an interactive terminal (TUI) session cannot be mirrored from outside — Claude Code does not expose that. Bot sessions are the supported bridge.
-
-### Codex notes
-
-Create a `New Codex thread` or open existing threads from `codex app-server`. Supported interactions include chat, streaming tails, turn notifications, and exec/patch approval round-trips. Codex has no plan mode, so the mode control is hidden.
-
-### CLI reference
+## CLI
 
 ```text
-raven setup            wizard: token, config, plugin, background service (macOS)
-raven run              run the daemon in the foreground (Ctrl-C stops)
-raven pair             pending pairing code + list of paired chats
-raven pair revoke <chatId>   unpair a chat from the terminal (notifies it)
-raven status           paired chats, leader, link health, detected client binaries
-raven logs [-f]        tail the bridge log (pure-Node, works on all platforms)
+raven setup                  wizard: token, config, plugin, service (macOS)
+raven run                    run the daemon in the foreground (Ctrl-C stops)
+raven pair                   pending code + paired chats
+raven pair revoke <chatId>   unpair a chat (notifies it on Telegram)
+raven status                 paired chats, leader, link health, binaries
+raven logs [-f]              tail the bridge log (all platforms)
 raven service install|remove|status   (macOS launchd only)
 raven uninstall [--purge]
 ```
 
-`raven status` is the fastest way to diagnose installation issues — it shows the config path, paired chats, leader lock, link status, and whether `opencode`, `claude`, and `codex` binaries were detected.
-
 ## Security
 
-A bot token alone grants no access. Every Telegram chat must be paired from a person with access to your computer:
-
-1. An unknown chat sends `/start`; Raven generates a 6-character one-time code.
-2. The code is shown only on your machine (terminal banner, desktop notification, `raven pair`).
-3. The user sends `/pair CODE` to the bot within 10 minutes.
-4. On success, the chat ID is added to `authorizedChatIds` in `~/.config/raven/raven.json`.
-
-Additional protections:
-
-- Codes expire after 10 minutes and allow 5 attempts.
-- Codes are bound to the requesting chat to prevent pasting a code from another chat.
-- Unpaired chats receive only pairing instructions; they cannot read sessions, permissions, or questions.
-- Optional owner approval: set `"pairing": { "ownerApprove": true }` to require an existing paired device to tap Approve before a new chat is authorized.
-- All traffic is outbound-only HTTPS to `api.telegram.org`. Nothing listens on your machine.
+- The bot token alone grants nothing — every chat must pair with a 6-character code shown only on your machine (10-minute expiry, 5 attempts, bound to its chat).
+- Optional owner approval: `"pairing": { "ownerApprove": true }`.
+- Outbound HTTPS to `api.telegram.org` only; nothing listens on your machine.
 
 ## Configuration
 
-Config file: `~/.config/raven/raven.json`
+Config: `~/.config/raven/raven.json` (`%APPDATA%\raven` on Windows).
 
 ```jsonc
 {
@@ -217,75 +103,42 @@ Config file: `~/.config/raven/raven.json`
   "pairing": { "ownerApprove": false },
   "notify": { "idle": true, "error": true, "permission": true, "question": true, "session": false },
   "relay": true, // include assistant replies on live cards
-  "logLevel": "info", // use "debug" for per-action spool logs
+  "logLevel": "info", // "debug" for per-action logs
   "clients": {
-    "claude": { "bin": "", "workspace": "" }, // bin auto-detected; set manually to override
-    "codex": { "bin": "" } // also finds the VS Code extension's bundled binary
+    "claude": { "bin": "", "workspace": "" }, // auto-detected; set to override
+    "codex": { "bin": "" } // also finds the VS Code extension's binary
   }
 }
 ```
 
-Proxy notes:
-
-- If Telegram is blocked on your network, run an HTTP/SOCKS proxy on the Mac (for example V2Ray or Clash) and set `proxy` in the config or `HTTPS_PROXY` in the environment.
-- Phone-side MTProto proxies do not apply — the Mac itself connects to `api.telegram.org`.
-
 ## Troubleshooting
 
-- **No active pairing code** — the code expired or belongs to another chat. Send `/start` again from that chat, then run `raven pair`.
-- **Plugin changes not visible** — restart OpenCode Desktop after `raven setup` or upgrades. Plugins load at startup.
-- **Telegram 409 errors in logs** — another poller is using the same bot token. Stop the other poller; Raven elects a single leader via `~/.config/raven/leader.lock`.
-- **Codex not found** — install `@openai/codex`, or set `clients.codex.bin` to a codex binary >= 0.160 (the VS Code extension's bundled binary is supported).
-- **Claude turns never finish** — run `raven status`. If `ANTHROPIC_BASE_URL` in `~/.claude/settings.json` points to a local gateway, verify the gateway is running and the selected model ID is one it accepts.
-- **Need logs** — run `raven logs -f`. Files: `~/.config/raven/raven.log` (`%APPDATA%\raven\raven.log` on Windows), plus `daemon.out` / `daemon.err` for the macOS launchd service.
+- **No active pairing code** — it expired; send `/start` again, then `raven pair`.
+- **Plugin changes not visible** — restart OpenCode Desktop after setup/upgrade.
+- **Telegram 409 in logs** — another poller uses the same token; Raven elects one leader via `~/.config/raven/leader.lock`.
+- **Codex not found** — install `@openai/codex` or set `clients.codex.bin` (codex >= 0.160).
+- **Logs** — `raven logs -f`; file at `~/.config/raven/raven.log`.
 
 ## Development
 
 ```bash
 npm install
-npm run build        # esbuild → dist/raven-plugin.js, dist/raven-cli.js (~200 KB, zero runtime deps)
+npm run build        # esbuild → dist/ (~200 KB, zero runtime deps)
 npm run typecheck
-npm test             # opencode suite: real opencode serve + mock Telegram
-npm run test:agents  # Claude + Codex drivers vs protocol-accurate fakes
-npm run smoke:agents -- --real   # optional: real claude/codex binaries end-to-end
+npm run test:agents  # self-contained driver suite (no agents needed)
+npm test             # opencode suite (requires `opencode` installed)
 ```
 
-The published npm package ships only `dist/` and `README.md`. Tests, fakes, and docs are excluded.
-
-Built with Node.js, TypeScript, and esbuild. No runtime dependencies.
+CI runs typecheck + `test:agents` on every push; pushing a `v*` tag publishes to npm automatically (requires the `NPM_TOKEN` repo secret).
 
 ## Uninstall
 
 ```bash
-raven uninstall [--purge]
+raven uninstall [--purge]   # or ./uninstall.sh
 ```
 
-Or from a source checkout:
-
-```bash
-./uninstall.sh
-```
-
-This removes the background service (macOS) and the opencode plugin. Configuration and logs in `~/.config/raven/` (`%APPDATA%\raven` on Windows) are kept unless `--purge` is passed.
-
-## Contributing
-
-Contributions are welcome:
-
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/your-feature`).
-3. Commit your changes.
-4. Push to the branch (`git push origin feature/your-feature`).
-5. Open a pull request.
-
-Please include tests for driver or protocol changes (`npm test`, `npm run test:agents`) and update this README when user-facing behavior changes.
+Keeps config/logs unless `--purge` is passed.
 
 ## License
 
-Distributed under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Contact
-
-Project link: [https://github.com/erfanhooman/Raven](https://github.com/erfanhooman/Raven)
-
-Issues and feature requests: please use the GitHub issue tracker.
+MIT — see [LICENSE](LICENSE).
